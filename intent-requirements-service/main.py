@@ -19,15 +19,21 @@ from crewai import Agent, Task, Crew
 from colorama import Fore, Style, init
 from datetime import datetime, timedelta
 import uuid
-
+from decimal import Decimal
 
 # Colorama for colored terminal output
 init(autoreset=True)
 
 from configs.config import config as app_config
-from configs.config import config 
+from configs.config import config
 os.environ["CREWAI_TRACING_ENABLED"] = str(config.CREWAI_TRACING_ENABLED).lower()
 
+# NEW: centralised persistence (DynamoDB or in-memory depending on USE_DDB)
+from memory_store import get_memory, put_memory
+
+# -------------------------------------------------
+# Pydantic models
+# -------------------------------------------------
 class IntentRequest(BaseModel):
     user_input: str
     session_context: Optional[Dict[str, Any]] = Field(default=None)
@@ -46,9 +52,9 @@ class RequirementsResponse(BaseModel):
     requirements_extracted: bool
     requirements_data: Optional[Dict[str, Any]] = Field(default=None)
 
-# Session storage with caching
-SESSION_CACHE = {}
-
+# -------------------------------------------------
+# Helpers
+# -------------------------------------------------
 def load_config_file(filename: str) -> Dict[str, Any]:
     """Load configuration from YAML file"""
     config_path = Path(__file__).parent / 'configs' / filename
@@ -57,6 +63,18 @@ def load_config_file(filename: str) -> Dict[str, Any]:
             return yaml.safe_load(file)
     return {}
 
+def _from_ddb(obj):
+    if isinstance(obj, Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    if isinstance(obj, list):
+        return [_from_ddb(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _from_ddb(v) for k, v in obj.items()}
+    return obj
+
+# -------------------------------------------------
+# Service
+# -------------------------------------------------
 class IntentRequirementsService:
     def __init__(self):
         # Load configurations
@@ -100,73 +118,69 @@ class IntentRequirementsService:
     
     def _create_intent_agent(self) -> Agent:
         """Create binary intent classification agent"""
-        config = self.agents_config.get('intent_classifier', {})
+        config_a = self.agents_config.get('intent_classifier', {})
         print(f"{Fore.YELLOW}🤖 Creating Intent Classification Agent")
         
         # Create agent without memory to avoid Pydantic issues
         return Agent(
-            role=config.get('role', 'Intent Classifier'),
-            goal=config.get('goal', 'Binary intent classification'),
-            backstory=config.get('backstory', 'Expert classifier'),
-            verbose=config.get('verbose', False),
-            allow_delegation=config.get('allow_delegation', False),
+            role=config_a.get('role', 'Intent Classifier'),
+            goal=config_a.get('goal', 'Binary intent classification'),
+            backstory=config_a.get('backstory', 'Expert classifier'),
+            verbose=config_a.get('verbose', False),
+            allow_delegation=config_a.get('allow_delegation', False),
             memory=False,  # Disable memory to avoid Pydantic issues
-            max_iter=config.get('max_iter', 1),
-            max_execution_time=config.get('max_execution_time', 30)
+            max_iter=config_a.get('max_iter', 1),
+            max_execution_time=config_a.get('max_execution_time', 30)
         )
     
     def _create_requirements_agent(self) -> Agent:
         """Create intelligent requirements gathering agent"""
-        config = self.agents_config.get('requirements_gatherer', {})
+        config_r = self.agents_config.get('requirements_gatherer', {})
         print(f"{Fore.YELLOW}🤖 Creating Requirements Gathering Agent")
         
         # Create agent without memory initially to avoid Pydantic issues
         return Agent(
-            role=config.get('role', 'Requirements Collector'),
-            goal=config.get('goal', 'Intelligent requirements gathering'),
-            backstory=config.get('backstory', 'Expert at gathering travel information'),
-            verbose=config.get('verbose', False),
-            allow_delegation=config.get('allow_delegation', False),
+            role=config_r.get('role', 'Requirements Collector'),
+            goal=config_r.get('goal', 'Intelligent requirements gathering'),
+            backstory=config_r.get('backstory', 'Expert at gathering travel information'),
+            verbose=config_r.get('verbose', False),
+            allow_delegation=config_r.get('allow_delegation', False),
             memory=False,  # Disable memory to avoid Pydantic issues
-            max_iter=config.get('max_iter', 3),
-            max_execution_time=config.get('max_execution_time', 60)
+            max_iter=config_r.get('max_iter', 3),
+            max_execution_time=config_r.get('max_execution_time', 60)
         )
     
+    # ---------- SESSION PERSISTENCE (via memory_store) ----------
     def _get_session_data(self, session_id: str) -> Dict[str, Any]:
-        """Get or create cached session data"""
-        if session_id not in SESSION_CACHE:
-            print(f"{Fore.BLUE}📝 Creating new session: {session_id}")
-            SESSION_CACHE[session_id] = {
-                "conversation_history": [],
-                "requirements": copy.deepcopy(self.target_json_template),
-                "phase": "initial",
-                "last_updated": None
-            }
-        return SESSION_CACHE[session_id]
+        """Load session memory from store (DDB/in-memory)"""
+        mem = get_memory(session_id, self.target_json_template)
+        # Ensure expected shape
+        mem.setdefault("conversation_history", [])
+        mem.setdefault("requirements", copy.deepcopy(self.target_json_template))
+        mem.setdefault("phase", "initial")
+        return mem
     
-    def _cleanup_old_sessions(self):
-        """Remove sessions older than 24 hours"""
-        current_time = datetime.now()
-        expired_sessions = [
-            sid for sid, data in SESSION_CACHE.items()
-            if current_time - data.get("last_updated", current_time) > timedelta(hours=24)
-        ]
-        for sid in expired_sessions:
-            del SESSION_CACHE[sid]
-    
-    def _update_session(self, session_id: str, user_input: str, agent_response: str, requirements: Dict = None):
-        """Update session with conversation and requirements"""
+    def _update_session(
+        self,
+        session_id: str,
+        user_input: str,
+        agent_response: str,
+        requirements: Dict = None,
+        phase: Optional[str] = None
+    ):
+        """Persist conversation + requirements with minimal mutation"""
         session = self._get_session_data(session_id)
-        session["conversation_history"].append({"role": "user", "message": user_input})
-        session["conversation_history"].append({"role": "agent", "message": agent_response})
+        conversation_history = session.get("conversation_history", [])
+        conversation_history.append({"role": "user", "message": user_input})
+        conversation_history.append({"role": "agent", "message": agent_response})
         
-        if requirements:
-            session["requirements"] = requirements
+        reqs = requirements or session.get("requirements", copy.deepcopy(self.target_json_template))
+        new_phase = phase or session.get("phase", "initial")
         
-        # Keep only last 10 messages for memory efficiency
-        if len(session["conversation_history"]) > 10:
-            session["conversation_history"] = session["conversation_history"][-10:]
+        # Persist
+        put_memory(session_id, conversation_history, reqs, new_phase)
     
+    # ---------- AGENT WORK ----------
     async def classify_intent(self, user_input: str) -> str:
         """Binary intent classification: greeting or planning"""
         try:
@@ -207,7 +221,6 @@ class IntentRequirementsService:
                 return "other"
         
     async def gather_requirements(self, user_input: str, intent: str, session_id: str) -> Dict:
-        
         session = self._get_session_data(session_id)
         
         # Handle off-topic conversations
@@ -235,10 +248,9 @@ class IntentRequirementsService:
             crew = Crew(agents=[self.requirements_agent], tasks=[task], verbose=False, process_timeout=None)
             response = str(crew.kickoff())
             
-            # Update session and move to collecting phase
+            # Move/keep phase as "initial"
+            self._update_session(session_id, user_input, response, requirements=None, phase="initial")
             session = self._get_session_data(session_id)
-            session["phase"] = "initial"
-            self._update_session(session_id, user_input, response)
             
             result = {
                 "response": response,
@@ -246,28 +258,38 @@ class IntentRequirementsService:
                 "requirements_extracted": False,
                 "requirements_data": session["requirements"]
             }
-            
             return result
             
         except Exception as e:
             print(f"{Fore.RED}❌ Greeting handling error: {type(e).__name__}: {e}{Style.RESET_ALL}")
+            # graceful fallback
+            fallback = "Hello! I'm helping you plan your trip. Where would you like to go and when?"
+            self._update_session(session_id, user_input, fallback, requirements=None, phase="initial")
+            session = self._get_session_data(session_id)
+            return {
+                "response": fallback,
+                "intent": "greeting",
+                "requirements_extracted": False,
+                "requirements_data": session["requirements"]
+            }
     
     async def _handle_planning(self, user_input: str, session_id: str) -> Dict:
         """Handle planning with comprehensive requirements collection"""
         try:
             session = self._get_session_data(session_id)
             
-            # Prepare conversation history
+            # Prepare conversation history (last ~6 turns)
             conversation_history = "\n".join([
                 f"{msg['role']}: {msg['message']}" 
                 for msg in session["conversation_history"][-6:]
             ])
             
             task_config = self.tasks_config.get('comprehensive_requirements_collection', {})
+            safe_requirements = _from_ddb(session["requirements"])
             prompt = task_config.get('description', '').format(
                 user_input=user_input,
                 conversation_history=conversation_history,
-                current_requirements=json.dumps(session["requirements"], indent=2),
+                current_requirements=json.dumps(safe_requirements, indent=2),
                 phase=session["phase"],
                 target_json=json.dumps(self.target_json_template, indent=2),
                 max_tokens=app_config.MAX_TOKENS
@@ -296,11 +318,9 @@ class IntentRequirementsService:
             if json_match:
                 try:
                     extracted_json = json.loads(json_match.group(1))
-                    print(f"📊 EXTRACTED JSON:")
+                    print("📊 EXTRACTED JSON:")
                     print(json.dumps(extracted_json, indent=2))
                     updated_requirements = extracted_json
-                    session["requirements"] = updated_requirements
-
                 except json.JSONDecodeError as e:
                     print(f"{Fore.YELLOW}⚠️ JSON parsing failed, using existing requirements: {e}{Style.RESET_ALL}")
             
@@ -310,9 +330,14 @@ class IntentRequirementsService:
                 new_phase = "complete"
                 response_text += "\n\nExcellent! I have all the information needed for your sustainable travel planning."
             
-            # Update session
-            session["phase"] = new_phase
-            self._update_session(session_id, user_input, response_text, updated_requirements)
+            # Persist updates (history + requirements + phase)
+            self._update_session(
+                session_id,
+                user_input,
+                response_text,
+                requirements=updated_requirements,
+                phase=new_phase
+            )
             
             final_result = {
                 "response": response_text,
@@ -320,7 +345,6 @@ class IntentRequirementsService:
                 "requirements_extracted": requirements_extracted,
                 "requirements_data": updated_requirements
             }
-            
             return final_result
             
         except Exception as e:
@@ -329,8 +353,10 @@ class IntentRequirementsService:
             traceback.print_exc()
             # Fallback response
             session = self._get_session_data(session_id)
+            fallback = "I'd be happy to help you plan your sustainable travel! Could you tell me where you'd like to go and when?"
+            self._update_session(session_id, user_input, fallback, requirements=session["requirements"], phase=session.get("phase","initial"))
             return {
-                "response": "I'd be happy to help you plan your sustainable travel! Could you tell me where you'd like to go and when?",
+                "response": fallback,
                 "intent": "planning", 
                 "requirements_extracted": False,
                 "requirements_data": session["requirements"]
@@ -353,6 +379,9 @@ class IntentRequirementsService:
         else:
             response = "I'm here to help you plan sustainable travel. Where would you like to go for your next trip?"
         
+        # Persist the assistant response in the history as well
+        self._update_session(session_id, user_input, response, requirements=session["requirements"], phase=session.get("phase","initial"))
+        
         return {
             "response": response,
             "intent": "other",
@@ -374,10 +403,11 @@ class IntentRequirementsService:
         ]
         
         completion_status = all(field is not None and field != "" for field in required_fields)
-        
         return completion_status
 
-# Initialize service
+# -------------------------------------------------
+# FastAPI wiring
+# -------------------------------------------------
 app = FastAPI(title="Enhanced Travel Requirements Service", version="2.0.0")
 service = IntentRequirementsService()
 
@@ -413,10 +443,11 @@ async def get_session(session_id: str):
 
 @app.delete("/session/{session_id}")
 async def clear_session(session_id: str):
-    if session_id in SESSION_CACHE:
-        del SESSION_CACHE[session_id]
-        return {"message": "Session cleared"}
-    return {"message": "Session not found"}
+    """Reset session memory to a clean slate (works for both in-memory and DynamoDB)."""
+    # Write an empty memory record (effectively 'clears' it)
+    empty_reqs = copy.deepcopy(service.target_json_template)
+    put_memory(session_id, conversation_history=[], requirements=empty_reqs, phase="initial")
+    return {"message": "Session cleared"}
 
 @app.get("/")
 async def root():
@@ -424,9 +455,20 @@ async def root():
         "message": "Enhanced Travel Requirements Service",
         "version": "2.0.0",
         "intents": ["greeting", "planning"],
-        "features": ["Binary Intent Classification", "Intelligent Requirements Collection", "Enhanced Terminal Output", "Memory & Caching", "Edge Case Handling"]
+        "features": [
+            "Binary Intent Classification",
+            "Intelligent Requirements Collection",
+            "Enhanced Terminal Output",
+            "Memory & Caching",
+            "Edge Case Handling"
+        ]
     }
 
+# Lambda adapter
+from mangum import Mangum
+lambda_handler = Mangum(app)
+
+# Local dev entrypoint
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)

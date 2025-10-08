@@ -8,7 +8,6 @@ intent_classifier:
     versus users wanting to plan travel. You make quick, accurate binary decisions without overcomplicating.
   verbose: false
   allow_delegation: false
-  memory: false
   max_iter: 1
   max_execution_time: 30
 
@@ -24,6 +23,5 @@ requirements_gatherer:
     of collected information and always know exactly what's missing from the target structure.
   verbose: false
   allow_delegation: false  
-  memory: true
   max_iter: 3
   max_execution_time: 60
