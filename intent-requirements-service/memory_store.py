@@ -1,80 +1,111 @@
-# intent-requirements-service/memory_store.py
-import os
-from dotenv import load_dotenv
-load_dotenv()
+# intent-requirements-service/memory_store.py  (REPLACE FULL FILE)
 
-print("USE_DDB =", os.getenv("USE_DDB"))
-print("AWS_DDB_ENDPOINT =", os.getenv("AWS_DDB_ENDPOINT"))
-print("AWS_REGION =", os.getenv("AWS_REGION"), "AWS_DEFAULT_REGION =", os.getenv("AWS_DEFAULT_REGION"))
-print("DDB_SESSIONS_TABLE =", os.getenv("DDB_SESSIONS_TABLE"))
-print("DDB_MEMORY_TABLE =", os.getenv("DDB_MEMORY_TABLE"))
-
+import os, json
+from datetime import datetime
+from typing import Any, Dict, Optional
 import boto3
 from botocore.exceptions import ClientError
-from datetime import datetime
+from dotenv import load_dotenv
 
-DDB_MEMORY_TABLE = os.getenv("DDB_MEMORY_TABLE", "travel_memory")
-USE_DDB = os.getenv("USE_DDB", "false").lower() == "true"
-AWS_DDB_ENDPOINT = os.getenv("AWS_DDB_ENDPOINT")
+load_dotenv()
 
-# In-memory fallback
-_memory_store = {}
+AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-2")
+USE_S3 = os.getenv("USE_S3", "false").lower() == "true"
 
-if USE_DDB:
-    _ddb = boto3.resource(
-        "dynamodb",
-        region_name=os.getenv("AWS_REGION", "ap-southeast-1"),
-        endpoint_url=AWS_DDB_ENDPOINT if AWS_DDB_ENDPOINT else None
-    )
-    memory_table = _ddb.Table(DDB_MEMORY_TABLE)
+# S3 settings
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+S3_BASE_PREFIX = os.getenv("S3_BASE_PREFIX", "").strip().strip("/")
+S3_MEMORY_PREFIX = os.getenv("S3_MEMORY_PREFIX", "requirements/").strip()
+S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT")  # LocalStack optional
 
+# Fallback in-memory (for local/dev when USE_S3=false)
+_memory_store: Dict[str, Dict[str, Any]] = {}
 
-def get_memory(session_id: str, target_template: dict = None):
-    if not USE_DDB:
+_s3 = None
+if USE_S3:
+    _s3 = boto3.client("s3", region_name=AWS_REGION, endpoint_url=S3_ENDPOINT)
+
+def _join_prefix(*parts: str) -> str:
+    pieces = [p.strip().strip("/") for p in parts if p and p.strip().strip("/")]
+    if not pieces:
+        return ""
+    return "/".join(pieces) + "/"
+
+def _effective_prefix(service_prefix: str) -> str:
+    return _join_prefix(S3_BASE_PREFIX, service_prefix)
+
+def _memory_key(session_id: str) -> str:
+    base = _effective_prefix(S3_MEMORY_PREFIX)  # e.g., dev/memory/
+    return f"{base}{session_id}.json"
+
+def _now_iso() -> str:
+    return datetime.now().isoformat()
+
+def get_memory(session_id: str, target_template: dict = None) -> Dict[str, Any]:
+    if not USE_S3:
         return _memory_store.get(session_id, {
             "session_id": session_id,
             "conversation_history": [],
             "requirements": target_template or {},
             "phase": "initial",
-            "last_updated": datetime.now().isoformat()
+            "last_updated": _now_iso()
         })
+
+    key = _memory_key(session_id)
     try:
-        resp = memory_table.get_item(Key={"session_id": session_id})
-        if "Item" in resp:
-            return resp["Item"]
-        # Create default if missing
+        obj = _s3.get_object(Bucket=S3_BUCKET_NAME, Key=key)
+        body = obj["Body"].read().decode("utf-8")
+        return json.loads(body)
+    except _s3.exceptions.NoSuchKey:
+        # Return default if not found
         return {
             "session_id": session_id,
             "conversation_history": [],
             "requirements": target_template or {},
             "phase": "initial",
-            "last_updated": datetime.now().isoformat()
+            "last_updated": _now_iso()
         }
     except ClientError as e:
-        print(f"DDB get_memory error: {e}")
+        code = e.response.get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404"):
+            return {
+                "session_id": session_id,
+                "conversation_history": [],
+                "requirements": target_template or {},
+                "phase": "initial",
+                "last_updated": _now_iso()
+            }
+        print(f"S3 get_memory error: {e}")
         return {
             "session_id": session_id,
             "conversation_history": [],
             "requirements": target_template or {},
             "phase": "initial",
-            "last_updated": datetime.now().isoformat()
+            "last_updated": _now_iso()
         }
-
 
 def put_memory(session_id: str, conversation_history: list, requirements: dict, phase: str):
     item = {
         "session_id": session_id,
-        "conversation_history": conversation_history,
+        "conversation_history": conversation_history[-int(os.getenv("MAX_HISTORY", "10")):],  # trim
         "requirements": requirements,
         "phase": phase,
-        "last_updated": datetime.now().isoformat()
+        "last_updated": _now_iso()
     }
 
-    if not USE_DDB:
+    if not USE_S3:
         _memory_store[session_id] = item
         return
 
-    try:
-        memory_table.put_item(Item=item)
-    except ClientError as e:
-        print(f"DDB put_memory error: {e}")
+    if not S3_BUCKET_NAME:
+        raise RuntimeError("S3_BUCKET_NAME is not set")
+
+    key = _memory_key(session_id)
+    body = json.dumps(item, ensure_ascii=False).encode("utf-8")
+    _s3.put_object(
+        Bucket=S3_BUCKET_NAME,
+        Key=key,
+        Body=body,
+        ContentType="application/json",
+        ServerSideEncryption="AES256"
+    )

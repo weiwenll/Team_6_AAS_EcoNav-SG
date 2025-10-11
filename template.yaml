@@ -1,55 +1,90 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sustainable Travel Planner - Lambda Microservices
+Description: >
+  🌍 Sustainable Travel Planner - Serverless Multi-Agent Microservices
+  Architecture: FastAPI + CrewAI + NeMo Guardrails + S3 State Management
 
 Globals:
   Function:
     Runtime: python3.11
-    Timeout: 30
-    MemorySize: 512
     Architectures: [x86_64]
+    Timeout: 120
+    MemorySize: 1024
     Environment:
       Variables:
+        USE_S3: "true"
+        USE_DDB: "false"
         AWS_REGION: !Ref AWS::Region
-        USE_DDB: "true"
-        DDB_SESSIONS_TABLE: travel_sessions
-        DDB_MEMORY_TABLE: travel_memory
+        S3_BUCKET_NAME: !Ref StateBucketName
+        S3_BASE_PREFIX: !Ref StateBasePrefix
+        S3_SESSIONS_PREFIX: "sessions/"
+        S3_MEMORY_PREFIX: "memory/"
+        MAX_HISTORY: "10"
+        DEBUG: "false"
 
 Parameters:
   OpenAIKey:
     Type: String
     NoEcho: true
+    Description: OpenAI API Key for CrewAI and NeMo Guardrails
   ModelName:
     Type: String
     Default: gpt-4o
+    Description: OpenAI model name (gpt-4o / gpt-4o-mini)
+  StateBucketName:
+    Type: String
+    Description: Name of the S3 bucket to store session and memory JSON files
+  StateBasePrefix:
+    Type: String
+    Default: dev
+    Description: Folder prefix within the S3 bucket (e.g., dev or prod)
 
+# --------------------------------------------------
+# LAYERS (CrewAI + NeMo Guardrails)
+# --------------------------------------------------
 Resources:
-  # ---------- DynamoDB ----------
-  TravelSessions:
-    Type: AWS::DynamoDB::Table
+  CrewAILayer:
+    Type: AWS::Serverless::LayerVersion
     Properties:
-      TableName: travel_sessions
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: session_id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: session_id
-          KeyType: HASH
+      LayerName: crewai-dependencies
+      Description: CrewAI + LangChain dependencies layer
+      ContentUri: layers/crewai/
+      CompatibleRuntimes: [python3.11]
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.11
 
-  TravelMemory:
-    Type: AWS::DynamoDB::Table
+  NeMoLayer:
+    Type: AWS::Serverless::LayerVersion
     Properties:
-      TableName: travel_memory
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: session_id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: session_id
-          KeyType: HASH
+      LayerName: nemo-guardrails
+      Description: NeMo Guardrails + LLM Safety dependencies layer
+      ContentUri: layers/nemo/
+      CompatibleRuntimes: [python3.11]
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.11
 
-  # ---------- HTTP API ----------
+# --------------------------------------------------
+# S3 BUCKET (State Store)
+# --------------------------------------------------
+  StateBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref StateBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldState
+            Status: Enabled
+            ExpirationInDays: 7
+            Prefix: !Sub "${StateBasePrefix}/"
+    DeletionPolicy: Retain
+
+# --------------------------------------------------
+# API GATEWAY
+# --------------------------------------------------
   HttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -58,67 +93,109 @@ Resources:
         AllowMethods: ['*']
         AllowHeaders: ['*']
 
-  # ---------- Shared Services ----------
+# --------------------------------------------------
+# SHARED SERVICES - SECURITY & TRANSPARENCY
+# --------------------------------------------------
   SharedServicesFn:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: shared-services
       CodeUri: shared-services/
       Handler: main.lambda_handler
+      Layers: [!Ref NeMoLayer]
+      MemorySize: 2048
+      Timeout: 180
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: travel_sessions
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !Sub "arn:aws:s3:::${StateBucketName}/${StateBasePrefix}/*"
       Environment:
         Variables:
-          DEBUG: "false"
           OPENAI_API_KEY: !Ref OpenAIKey
-          DDB_TTL_DAYS: "2"
-          DDB_SESSIONS_TABLE: travel_sessions
-          DDB_MEMORY_TABLE: travel_memory
-          USE_DDB: "true"
+          S3_BUCKET_NAME: !Ref StateBucketName
+          S3_BASE_PREFIX: !Ref StateBasePrefix
+          S3_SESSIONS_PREFIX: "sessions/"
+          USE_S3: "true"
+          DEBUG: "false"
       Events:
-        # Expose its routes too (optional but handy for direct calls)
-        AnyRoute:
+        SharedRoutes:
           Type: HttpApi
           Properties:
             ApiId: !Ref HttpApi
             Method: ANY
             Path: /shared/{proxy+}
+        SecurityRoutes:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: ANY
+            Path: /security/{proxy+}
+        SessionRoutes:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: ANY
+            Path: /session/{proxy+}
 
-  # ---------- Intent/Requirements ----------
+# --------------------------------------------------
+# INTENT & REQUIREMENTS AGENT SERVICE
+# --------------------------------------------------
   IntentServiceFn:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: intent-requirements-service
       CodeUri: intent-requirements-service/
       Handler: main.lambda_handler
+      Layers: [!Ref CrewAILayer]
+      MemorySize: 3008
+      Timeout: 300
+      EphemeralStorage:
+        Size: 1024
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: travel_memory
+        - Statement:
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !Sub "arn:aws:s3:::${StateBucketName}/${StateBasePrefix}/*"
       Environment:
         Variables:
           OPENAI_API_KEY: !Ref OpenAIKey
           OPENAI_MODEL_NAME: !Ref ModelName
-          CREWAI_TRACING_ENABLED: "false"
-          USE_DDB: "true"
-          DDB_MEMORY_TABLE: travel_memory
+          USE_S3: "true"
+          S3_BUCKET_NAME: !Ref StateBucketName
+          S3_BASE_PREFIX: !Ref StateBasePrefix
+          S3_MEMORY_PREFIX: "memory/"
+          CREWAI_TRACING_ENABLED: "true"
+          MAX_TOKENS: "300"
+          DEBUG: "false"
       Events:
-        AnyRoute:
+        IntentRoutes:
           Type: HttpApi
           Properties:
             ApiId: !Ref HttpApi
             Method: ANY
             Path: /intent/{proxy+}
 
-  # ---------- API Gateway (Orchestrator) ----------
+# --------------------------------------------------
+# MAIN API GATEWAY FUNCTION
+# --------------------------------------------------
   ApiGatewayFn:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: stp-api-gateway
       CodeUri: api-gateway/
       Handler: main.lambda_handler
+      MemorySize: 1024
+      Timeout: 330
       Policies:
-        - AWSLambdaBasicExecutionRole
         - Statement:
             Effect: Allow
             Action:
@@ -131,7 +208,7 @@ Resources:
           DOWNSTREAM_MODE: "LAMBDA"
           INTENT_SERVICE_LAMBDA: !Ref IntentServiceFn
           SHARED_SERVICES_LAMBDA: !Ref SharedServicesFn
-          OPENAI_API_KEY: !Ref OpenAIKey
+          DEBUG: "false"
       Events:
         TravelPlan:
           Type: HttpApi
@@ -139,7 +216,29 @@ Resources:
             ApiId: !Ref HttpApi
             Method: POST
             Path: /travel/plan
+        HealthCheck:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /health
 
+# --------------------------------------------------
+# OUTPUTS
+# --------------------------------------------------
 Outputs:
   ApiBaseUrl:
+    Description: Public API Gateway endpoint URL
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  ApiGatewayFunction:
+    Description: Main API Gateway Lambda ARN
+    Value: !GetAtt ApiGatewayFn.Arn
+  IntentServiceFunction:
+    Description: Intent/Requirements Lambda ARN
+    Value: !GetAtt IntentServiceFn.Arn
+  SharedServicesFunction:
+    Description: Shared Services Lambda ARN
+    Value: !GetAtt SharedServicesFn.Arn
+  StateBucket:
+    Description: S3 bucket used for session + memory state
+    Value: !Ref StateBucketName

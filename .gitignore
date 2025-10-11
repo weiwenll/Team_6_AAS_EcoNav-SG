@@ -7,3 +7,4 @@ intent-requirements-service/.env
 shared-services/.env
 shared-services/__pycache__
 shared-services/guardrails_config/__pycache__
+common/__pycache__

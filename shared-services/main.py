@@ -8,23 +8,31 @@ from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-# Ensure local package imports work whether you run from repo root or the folder
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-# Local modules
 from security_pipeline import SecurityPipeline
 from transparency import TransparencyEngine
 
-# DynamoDB session helper (uses in-memory fallback when USE_DDB=false)
-from dynamo import (
-    get_session as ddb_get,
-    put_session as ddb_put,
-    update_session as ddb_update,
-    delete_session as ddb_delete,
-)
+# -------- Select backend at runtime --------
+USE_S3 = os.getenv("USE_S3", "false").lower() == "true"
+if USE_S3:
+    from s3_store import (
+        get_session as store_get,
+        put_session as store_put,
+        update_session as store_update,
+        delete_session as store_delete,
+    )
+else:
+    # Fallback to existing DDB helper
+    from dynamo import (
+        get_session as store_get,
+        put_session as store_put,
+        update_session as store_update,
+        delete_session as store_delete,
+    )
 
 # ---------------------------
 # Pydantic models
@@ -45,11 +53,9 @@ class SessionCreateRequest(BaseModel):
     user_id: Optional[str] = None
 
 # ---------------------------
-# Session Manager (DDB or in-memory via helper)
+# Session Manager (S3 or DDB)
 # ---------------------------
 class SessionManager:
-    """Session management with in-memory fallback (controlled by USE_DDB)."""
-
     @staticmethod
     def ensure_session(
         session_id: str = None,
@@ -61,7 +67,7 @@ class SessionManager:
         if not session_id:
             session_id = str(uuid.uuid4())[:8]
 
-        existing = ddb_get(session_id)
+        existing = store_get(session_id)
         if not existing:
             session = {
                 "session_id": session_id,
@@ -73,13 +79,12 @@ class SessionManager:
                 "error_count": 0,
                 "success_metrics": {"responses_generated": 0, "coordinations_successful": 0},
             }
-            ddb_put(session)
+            store_put(session)
             return session
 
         if updates:
-            # Ensure last_active is refreshed
             updates = {**updates, "last_active": datetime.now().isoformat()}
-            ddb_update(session_id, updates)
+            store_update(session_id, updates)
             existing.update(updates)
 
         return existing
@@ -91,9 +96,6 @@ app = FastAPI(title="Shared Services - Security & Transparency", version="1.0.0"
 security_pipeline = SecurityPipeline()
 transparency_engine = TransparencyEngine()
 
-# ---------------------------
-# Common error handler
-# ---------------------------
 def handle_errors(func):
     @wraps(func)
     async def wrapper(*args, **kwargs):
@@ -106,41 +108,30 @@ def handle_errors(func):
             raise HTTPException(status_code=500, detail=str(e))
     return wrapper
 
-# ---------------------------
-# Health
-# ---------------------------
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "shared-services"}
+    return {"status": "healthy", "service": "shared-services", "backend": "S3" if USE_S3 else "DDB"}
 
-# ---------------------------
-# Security endpoints
-# ---------------------------
+# ----- Security -----
 @app.post("/security/validate-input")
 @handle_errors
 async def validate_input(request: SecurityInputRequest):
-    """Validate input using NeMo Guardrails"""
     return await security_pipeline.validate_input(request.text, request.user_context)
 
 @app.post("/security/validate-output")
 @handle_errors
 async def validate_output(request: SecurityOutputRequest):
-    """Validate output using NeMo Guardrails"""
     return await security_pipeline.validate_output(request.response, request.context)
 
-# ---------------------------
-# Transparency endpoints
-# ---------------------------
+# ----- Transparency -----
 @app.post("/transparency/trust-score")
 @handle_errors
 async def calculate_trust_score(request: TrustScoreRequest):
-    """Calculate trust score"""
     return transparency_engine.calculate_trust_score(request.session_data, request.user_context)
 
 @app.post("/transparency/explain-decision")
 @handle_errors
 async def explain_decision(request: Dict[str, Any]):
-    """Generate decision explanation"""
     import uuid
     decision_id = request.get("decision_id", str(uuid.uuid4())[:8])
     reasoning_data = request.get("reasoning_data", {})
@@ -154,18 +145,14 @@ async def explain_decision(request: Dict[str, Any]):
 @app.get("/transparency/report/{session_id}")
 @handle_errors
 async def get_transparency_report(session_id: str):
-    """Get transparency report"""
     cleaned = transparency_engine.clear_old_explanations()
     if cleaned > 0:
         print(f"Cleaned up {cleaned} old explanations")
     return transparency_engine.get_transparency_report(session_id)
 
-# ---------------------------
-# Session management endpoints
-# ---------------------------
+# ----- Sessions -----
 @app.post("/session/create")
 async def create_session(request: SessionCreateRequest):
-    """Create a new session"""
     try:
         session = SessionManager.ensure_session(user_id=request.user_id)
         return {
@@ -179,7 +166,6 @@ async def create_session(request: SessionCreateRequest):
 
 @app.get("/session/{session_id}")
 async def get_session(session_id: str):
-    """Get session information"""
     try:
         session = SessionManager.ensure_session(session_id)
         return {
@@ -198,7 +184,6 @@ async def get_session(session_id: str):
 
 @app.put("/session/{session_id}")
 async def update_session(session_id: str, updates: Dict[str, Any]):
-    """Update session"""
     try:
         SessionManager.ensure_session(session_id, updates=updates)
         return {"message": "Session updated successfully", "session_id": session_id}
@@ -208,10 +193,9 @@ async def update_session(session_id: str, updates: Dict[str, Any]):
 
 @app.delete("/session/{session_id}")
 async def delete_session(session_id: str):
-    """Delete session"""
     try:
-        if ddb_get(session_id):
-            ddb_delete(session_id)
+        if store_get(session_id):
+            store_delete(session_id)
             return {"message": "Session deleted successfully"}
         else:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -221,39 +205,19 @@ async def delete_session(session_id: str):
         print(f"Session deletion error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
 
-# ---------------------------
-# Root
-# ---------------------------
 @app.get("/")
 async def root():
     return {
         "message": "Shared Services - Security & Transparency",
         "version": "1.0.0",
-        "services": {
-            "security": "NeMo Guardrails validation",
-            "transparency": "Trust scoring and decision explanation",
-        },
-        "available_endpoints": [
-            "/health",
-            "/security/validate-input",
-            "/security/validate-output",
-            "/transparency/trust-score",
-            "/transparency/explain-decision",
-            "/transparency/report/{session_id}",
-            "/session/create",
-            "/session/{session_id}",
-        ],
+        "backend": "S3" if USE_S3 else "DDB",
+        "services": {"security": "NeMo Guardrails", "transparency": "Trust & explanations"},
+        "endpoints": ["/health", "/security/*", "/session/*", "/transparency/*"],
     }
 
-# ---------------------------
-# Lambda adapter
-# ---------------------------
 from mangum import Mangum
 lambda_handler = Mangum(app)
 
-# ---------------------------
-# Local dev entrypoint
-# ---------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8004)
