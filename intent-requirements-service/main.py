@@ -21,12 +21,17 @@ from datetime import datetime, timedelta
 import uuid
 from decimal import Decimal
 
+import asyncio
+from langchain_openai import ChatOpenAI
+import httpx
+
 # Colorama for colored terminal output
 init(autoreset=True)
 
 from configs.config import config as app_config
 from configs.config import config
-os.environ["CREWAI_TRACING_ENABLED"] = str(config.CREWAI_TRACING_ENABLED).lower()
+os.environ["CREWAI_TRACING_ENABLED"] = "false"
+os.environ["CREWAI_TELEMETRY_DISABLED"] = "1"  # extra belt-and-braces for local runs
 
 # NEW: centralised persistence (DynamoDB or in-memory depending on USE_DDB)
 from memory_store import get_memory, put_memory
@@ -80,6 +85,7 @@ class IntentRequirementsService:
         # Load configurations
         self.agents_config = load_config_file('agents_config.yaml')
         self.tasks_config = load_config_file('tasks_config.yaml')
+        self.llm = self._build_llm()
         
         print(f"{Fore.MAGENTA}🚀 INITIALIZING TRAVEL SERVICE")
         print(f"{Fore.MAGENTA}Loaded agents config: {len(self.agents_config)} agents")
@@ -115,39 +121,47 @@ class IntentRequirementsService:
         }
         
         print(f"{Fore.GREEN}✅ SERVICE INITIALIZED SUCCESSFULLY{Style.RESET_ALL}")
-    
+
+    def _build_llm(self):
+        http = httpx.Client(timeout=httpx.Timeout(25.0, connect=5.0, read=25.0, write=10.0))
+        return ChatOpenAI(
+            model=app_config.OPENAI_MODEL_NAME,   # now gpt-4o-mini
+            temperature=0.2,
+            max_tokens=min(app_config.MAX_TOKENS, 300),
+            max_retries=1,                        # small retry to avoid transient blips
+            http_client=http,
+        )
+
+    async def _run_crew(self, crew, timeout: int):
+        # run in a worker thread, but still enforce an async timeout
+        return await asyncio.wait_for(asyncio.to_thread(crew.kickoff), timeout=timeout)
+
     def _create_intent_agent(self) -> Agent:
-        """Create binary intent classification agent"""
-        config_a = self.agents_config.get('intent_classifier', {})
-        print(f"{Fore.YELLOW}🤖 Creating Intent Classification Agent")
-        
-        # Create agent without memory to avoid Pydantic issues
+        c = self.agents_config.get('intent_classifier', {})
         return Agent(
-            role=config_a.get('role', 'Intent Classifier'),
-            goal=config_a.get('goal', 'Binary intent classification'),
-            backstory=config_a.get('backstory', 'Expert classifier'),
-            verbose=config_a.get('verbose', False),
-            allow_delegation=config_a.get('allow_delegation', False),
-            memory=False,  # Disable memory to avoid Pydantic issues
-            max_iter=config_a.get('max_iter', 1),
-            max_execution_time=config_a.get('max_execution_time', 30)
+            role=c.get('role', 'Intent Classifier'),
+            goal=c.get('goal', 'Binary intent classification'),
+            backstory=c.get('backstory', 'Expert classifier'),
+            verbose=False,
+            allow_delegation=False,
+            memory=False,
+            max_iter=1,
+            max_execution_time=15,   # tighter
+            llm=self.llm,
         )
     
     def _create_requirements_agent(self) -> Agent:
-        """Create intelligent requirements gathering agent"""
-        config_r = self.agents_config.get('requirements_gatherer', {})
-        print(f"{Fore.YELLOW}🤖 Creating Requirements Gathering Agent")
-        
-        # Create agent without memory initially to avoid Pydantic issues
+        c = self.agents_config.get('requirements_gatherer', {})
         return Agent(
-            role=config_r.get('role', 'Requirements Collector'),
-            goal=config_r.get('goal', 'Intelligent requirements gathering'),
-            backstory=config_r.get('backstory', 'Expert at gathering travel information'),
-            verbose=config_r.get('verbose', False),
-            allow_delegation=config_r.get('allow_delegation', False),
-            memory=False,  # Disable memory to avoid Pydantic issues
-            max_iter=config_r.get('max_iter', 3),
-            max_execution_time=config_r.get('max_execution_time', 60)
+            role=c.get('role', 'Requirements Collector'),
+            goal=c.get('goal', 'Intelligent requirements gathering'),
+            backstory=c.get('backstory', 'Expert at gathering travel information'),
+            verbose=False,
+            allow_delegation=False,
+            memory=False,
+            max_iter=1,              # ← set to 1 for speed; Crew still used
+            max_execution_time=25,   # ← keep modest
+            llm=self.llm,
         )
     
     # ---------- SESSION PERSISTENCE (via memory_store) ----------
@@ -197,8 +211,9 @@ class IntentRequirementsService:
             )
             
             # Use kickoff() with proper error handling
-            crew = Crew(agents=[self.intent_agent], tasks=[task], verbose=False, process_timeout=None)
-            result = str(crew.kickoff()).lower().strip()
+            crew = Crew(agents=[self.intent_agent], tasks=[task], verbose=False, process_timeout=12)
+            result = str(await self._run_crew(crew, timeout=15)).lower().strip()
+
             
             print(f"{Fore.CYAN}🎯 Intent Classification Result: {result}{Style.RESET_ALL}")
             
@@ -245,8 +260,8 @@ class IntentRequirementsService:
                 expected_output=task_config.get('expected_output', 'Greeting with planning question')
             )
             
-            crew = Crew(agents=[self.requirements_agent], tasks=[task], verbose=False, process_timeout=None)
-            response = str(crew.kickoff())
+            crew = Crew(agents=[self.requirements_agent], tasks=[task], verbose=False, process_timeout=18)
+            response = str(await self._run_crew(crew, timeout=20))
             
             # Move/keep phase as "initial"
             self._update_session(session_id, user_input, response, requirements=None, phase="initial")
@@ -301,8 +316,8 @@ class IntentRequirementsService:
                 expected_output=task_config.get('expected_output', 'Requirements extraction')
             )
             
-            crew = Crew(agents=[self.requirements_agent], tasks=[task], verbose=False)
-            result = str(crew.kickoff())
+            crew = Crew(agents=[self.requirements_agent], tasks=[task], verbose=False, process_timeout=32)
+            result = str(await self._run_crew(crew, timeout=35))
             
             # Parse result using advanced regex
             json_match = re.search(r'EXTRACTED_JSON:\s*(\{.*?\})\s*(?=RESPONSE:|$)', result, re.DOTALL)

@@ -18,7 +18,7 @@ Globals:
         S3_BUCKET_NAME: !Ref StateBucketName
         S3_BASE_PREFIX: !Ref StateBasePrefix
         S3_SESSIONS_PREFIX: "sessions/"
-        S3_MEMORY_PREFIX: "memory/"
+        S3_MEMORY_PREFIX: "requirements/"
         MAX_HISTORY: "10"
         DEBUG: "false"
 
@@ -172,7 +172,7 @@ Resources:
           USE_S3: "true"
           S3_BUCKET_NAME: !Ref StateBucketName
           S3_BASE_PREFIX: !Ref StateBasePrefix
-          S3_MEMORY_PREFIX: "memory/"
+          S3_MEMORY_PREFIX: "requirements/"
           CREWAI_TRACING_ENABLED: "true"
           MAX_TOKENS: "300"
           DEBUG: "false"
