@@ -15,7 +15,6 @@ sam deploy \
   --parameter-overrides \
     OpenAIKey="$OPENAI_KEY" \
     ModelName=gpt-4o-mini \
-    OWNER="${STACK_OWNER:-default}" \
     StateBucketName="stp-state-${OWNER}-${REGION}-$(date +%Y%m%d%H%M%S)" \
     StateBasePrefix=prod \
     AwsS3Endpoint="" \

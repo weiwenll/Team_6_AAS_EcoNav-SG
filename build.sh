@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+echo -e "${GREEN}Checking prerequisites...${NC}"
+command -v docker >/dev/null 2>&1 || { echo -e "${RED}Docker is required but not installed.${NC}" >&2; exit 1; }
+command -v sam >/dev/null 2>&1 || { echo -e "${RED}SAM CLI is required but not installed.${NC}" >&2; exit 1; }
+
 # -----------------------------
 # Pretty colors
 # -----------------------------
@@ -39,6 +43,12 @@ docker run --rm --network host -v "$PWD":/var/task public.ecr.aws/sam/build-pyth
       -r layers/crewai/requirements.txt -t layers/crewai/python/
   '
 
+# After each layer build, add:
+if [ ! -d "layers/crewai/python" ] || [ -z "$(ls -A layers/crewai/python)" ]; then
+    echo -e "${RED}Failed to build CrewAI layer${NC}"
+    exit 1
+fi
+
 # ---- NeMo layer (pins LC 0.1.x compatible with nemoguardrails 0.7.0) ----
 docker run --rm --network host -v "$PWD":/var/task public.ecr.aws/sam/build-python3.11:latest \
   /bin/bash -lc '
@@ -50,6 +60,12 @@ docker run --rm --network host -v "$PWD":/var/task public.ecr.aws/sam/build-pyth
       -r layers/nemo/requirements.txt -t layers/nemo/python/
   '
 
+# After each layer build, add:
+if [ ! -d "layers/nemo/python" ] || [ -z "$(ls -A layers/nemo/python)" ]; then
+    echo -e "${RED}Failed to build nemo layer${NC}"
+    exit 1
+fi
+
 # ---- Common layer ----
 docker run --rm --network host -v "$PWD":/var/task public.ecr.aws/sam/build-python3.11:latest \
   /bin/bash -lc '
@@ -60,6 +76,12 @@ docker run --rm --network host -v "$PWD":/var/task public.ecr.aws/sam/build-pyth
       --retries 8 --timeout 120 --prefer-binary -i https://pypi.org/simple \
       -r layers/common/requirements.txt -t layers/common/python/
   '
+
+# After each layer build, add:
+if [ ! -d "layers/common/python" ] || [ -z "$(ls -A layers/common/python)" ]; then
+    echo -e "${RED}Failed to build common layer${NC}"
+    exit 1
+fi
 
 # -----------------------------
 # Swap in lambda-specific requirements for each service
