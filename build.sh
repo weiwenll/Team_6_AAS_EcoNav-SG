@@ -1,10 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-echo -e "${GREEN}Checking prerequisites...${NC}"
-command -v docker >/dev/null 2>&1 || { echo -e "${RED}Docker is required but not installed.${NC}" >&2; exit 1; }
-command -v sam >/dev/null 2>&1 || { echo -e "${RED}SAM CLI is required but not installed.${NC}" >&2; exit 1; }
-
 # -----------------------------
 # Pretty colors
 # -----------------------------
@@ -12,6 +8,10 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+echo -e "${GREEN}Checking prerequisites...${NC}"
+command -v docker >/dev/null 2>&1 || { echo -e "${RED}Docker is required but not installed.${NC}" >&2; exit 1; }
+command -v sam >/dev/null 2>&1 || { echo -e "${RED}SAM CLI is required but not installed.${NC}" >&2; exit 1; }
 
 echo -e "${GREEN}Starting SAM build process...${NC}"
 
@@ -26,6 +26,11 @@ find layers -maxdepth 3 -type d -name "__pycache__" -prune -exec rm -rf {} + || 
 
 # Ensure layer python dirs exist
 mkdir -p layers/crewai/python layers/nemo/python layers/common/python
+
+# -----------------------------
+# Clean layers
+# -----------------------------
+rm -rf layers/crewai/python/* layers/nemo/python/* layers/common/python/* || true
 
 # -----------------------------
 # Build layers (hardened pip in Docker)

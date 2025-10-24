@@ -1,19 +1,17 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Travel Planner with Isolated Dependencies
+Description: Travel Planner with Docker Container Images (solves 250MB layer limit)
 
 Globals:
   Function:
-    Runtime: python3.11
-    Architectures: [x86_64]
     Timeout: 120
     MemorySize: 1024
+    Architectures: [x86_64]
     Environment:
       Variables:
         USE_S3: "true"
         AWS_REGION: !Ref AWS::Region
-        PYTHONPATH: /opt/python:/var/runtime:/var/task
-        AWS_S3_ENDPOINT: !Ref AwsS3Endpoint   # used in local with LocalStack
+        AWS_S3_ENDPOINT: !Ref AwsS3Endpoint
 
 Parameters:
   OpenAIKey:
@@ -29,38 +27,11 @@ Parameters:
     Default: prod
   AwsS3Endpoint:
     Type: String
-    Default: ""  # Empty for production AWS
-    Description: "S3 endpoint URL (leave empty for AWS, use http://localstack:4566 for local)"
+    Default: ""
+    Description: "S3 endpoint URL (leave empty for AWS)"
 
 Resources:
-  # Common dependencies layer
-  CommonLayer:
-    Type: AWS::Serverless::LayerVersion
-    Properties:
-      LayerName: common-dependencies
-      ContentUri: layers/common/
-      CompatibleRuntimes: [python3.11]
-      RetentionPolicy: Retain
-
-  # CrewAI layer (for intent service)
-  CrewAILayer:
-    Type: AWS::Serverless::LayerVersion
-    Properties:
-      LayerName: crewai-dependencies
-      ContentUri: layers/crewai/
-      CompatibleRuntimes: [python3.11]
-      RetentionPolicy: Retain
-
-  # NeMo layer (for shared services)
-  NeMoLayer:
-    Type: AWS::Serverless::LayerVersion
-    Properties:
-      LayerName: nemo-dependencies
-      ContentUri: layers/nemo/
-      CompatibleRuntimes: [python3.11]
-      RetentionPolicy: Retain
-
-  # S3 Bucket (Prod; in local you won't create this, you’ll point to LocalStack)
+  # S3 Bucket for state
   StateBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -76,7 +47,7 @@ Resources:
                 TransitionInDays: 1
           - Id: ExpireOldState
             Status: Enabled
-            ExpirationInDays: 30  # Extended for compliance
+            ExpirationInDays: 30
 
   # API Gateway (HTTP)
   HttpApi:
@@ -90,16 +61,12 @@ Resources:
         ThrottlingBurstLimit: 100
         ThrottlingRateLimit: 50
 
-  # Shared Services
+  # Shared Services - Docker Container
   SharedServicesFn:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: shared-services
-      CodeUri: shared-services/
-      Handler: main.lambda_handler
-      Layers: 
-        - !Ref CommonLayer
-        - !Ref NeMoLayer
+      PackageType: Image
       MemorySize: 2048
       Timeout: 180
       ReservedConcurrentExecutions: 10
@@ -135,6 +102,10 @@ Resources:
       LoggingConfig:
         LogGroup: !Sub '/aws/lambda/${AWS::StackName}-shared-services'
         LogFormat: JSON
+    Metadata:
+      Dockerfile: Dockerfile.shared-services
+      DockerContext: ./
+      DockerTag: latest
 
   SharedServicesLogGroup:
     Type: AWS::Logs::LogGroup
@@ -142,16 +113,12 @@ Resources:
       LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-shared-services'
       RetentionInDays: 7
 
-  # Intent Requirements Service
+  # Intent Requirements Service - Docker Container
   IntentServiceFn:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: intent-requirements-service
-      CodeUri: intent-requirements-service/
-      Handler: main.lambda_handler
-      Layers:
-        - !Ref CommonLayer
-        - !Ref CrewAILayer
+      PackageType: Image
       MemorySize: 3008
       Timeout: 300
       ReservedConcurrentExecutions: 10
@@ -176,27 +143,32 @@ Resources:
             ApiId: !Ref HttpApi
             Method: ANY
             Path: /intent/{proxy+}
+    Metadata:
+      Dockerfile: Dockerfile.intent-service
+      DockerContext: ./
+      DockerTag: latest
 
-  # API Gateway Lambda (front door)
+  # API Gateway Lambda - Docker Container
   ApiGatewayFn:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: stp-api-gateway
-      CodeUri: api-gateway/
-      Handler: main.lambda_handler
-      Layers:
-        - !Ref CommonLayer
+      PackageType: Image
       MemorySize: 1024
       Timeout: 330
       ReservedConcurrentExecutions: 20
       Policies:
-        - LambdaInvokeFunction:
-            FunctionName: !Ref SharedServicesFn
-        - LambdaInvokeFunction:
-            FunctionName: !Ref IntentServiceFn
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt SharedServicesFn.Arn
+                - !GetAtt IntentServiceFn.Arn
       Environment:
         Variables:
-          DOWNSTREAM_MODE: "LAMBDA"           # Prod default; local override uses HTTP
+          DOWNSTREAM_MODE: "LAMBDA"
           INTENT_SERVICE_LAMBDA: !Ref IntentServiceFn
           SHARED_SERVICES_LAMBDA: !Ref SharedServicesFn
       Events:
@@ -218,6 +190,10 @@ Resources:
             ApiId: !Ref HttpApi
             Method: GET
             Path: /health
+    Metadata:
+      Dockerfile: Dockerfile.api-gateway
+      DockerContext: ./
+      DockerTag: latest
 
 Outputs:
   ApiUrl:

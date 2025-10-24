@@ -1,0 +1,20 @@
+FROM public.ecr.aws/lambda/python:3.11
+
+# Install ALL required system dependencies including cmake
+RUN yum install -y gcc gcc-c++ make cmake pkgconfig
+
+# Copy requirements files from project root context
+COPY layers/crewai/requirements.txt /tmp/crewai-requirements.txt
+COPY layers/common/requirements.txt /tmp/common-requirements.txt
+COPY intent-requirements-service/requirements.txt /tmp/requirements.txt
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r /tmp/common-requirements.txt && \
+    pip install --no-cache-dir -r /tmp/crewai-requirements.txt && \
+    pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy application code
+COPY intent-requirements-service/ ${LAMBDA_TASK_ROOT}/
+
+# Set handler
+CMD [ "main.lambda_handler" ]
