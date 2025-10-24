@@ -1,8 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: >
-  🌍 Sustainable Travel Planner - Serverless Multi-Agent Microservices
-  Architecture: FastAPI + CrewAI + NeMo Guardrails + S3 State Management
+Description: Travel Planner with Isolated Dependencies
 
 Globals:
   Function:
@@ -13,61 +11,58 @@ Globals:
     Environment:
       Variables:
         USE_S3: "true"
-        USE_DDB: "false"
         AWS_REGION: !Ref AWS::Region
-        S3_BUCKET_NAME: !Ref StateBucketName
-        S3_BASE_PREFIX: !Ref StateBasePrefix
-        S3_SESSIONS_PREFIX: "sessions/"
-        S3_MEMORY_PREFIX: "requirements/"
-        MAX_HISTORY: "10"
-        DEBUG: "false"
+        PYTHONPATH: /opt/python:/var/runtime:/var/task
+        AWS_S3_ENDPOINT: !Ref AwsS3Endpoint   # used in local with LocalStack
 
 Parameters:
   OpenAIKey:
     Type: String
     NoEcho: true
-    Description: OpenAI API Key for CrewAI and NeMo Guardrails
   ModelName:
     Type: String
-    Default: gpt-4o
-    Description: OpenAI model name (gpt-4o / gpt-4o-mini)
+    Default: gpt-4o-mini
   StateBucketName:
     Type: String
-    Description: Name of the S3 bucket to store session and memory JSON files
   StateBasePrefix:
     Type: String
-    Default: dev
-    Description: Folder prefix within the S3 bucket (e.g., dev or prod)
+    Default: prod
+  AwsS3Endpoint:
+    Type: String
+    # IMPORTANT:
+    # - Local (SAM): default is localstack hostname reachable by lambdas on docker network
+    # - Prod: pass empty string "" via parameter override
+    Default: http://localstack:4566
 
-# --------------------------------------------------
-# LAYERS (CrewAI + NeMo Guardrails)
-# --------------------------------------------------
 Resources:
+  # Common dependencies layer
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: common-dependencies
+      ContentUri: layers/common/
+      CompatibleRuntimes: [python3.11]
+      RetentionPolicy: Retain
+
+  # CrewAI layer (for intent service)
   CrewAILayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: crewai-dependencies
-      Description: CrewAI + LangChain dependencies layer
       ContentUri: layers/crewai/
       CompatibleRuntimes: [python3.11]
       RetentionPolicy: Retain
-    Metadata:
-      BuildMethod: python3.11
 
+  # NeMo layer (for shared services)
   NeMoLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
-      LayerName: nemo-guardrails
-      Description: NeMo Guardrails + LLM Safety dependencies layer
+      LayerName: nemo-dependencies
       ContentUri: layers/nemo/
       CompatibleRuntimes: [python3.11]
       RetentionPolicy: Retain
-    Metadata:
-      BuildMethod: python3.11
 
-# --------------------------------------------------
-# S3 BUCKET (State Store)
-# --------------------------------------------------
+  # S3 Bucket (Prod; in local you won't create this, you’ll point to LocalStack)
   StateBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -79,12 +74,8 @@ Resources:
           - Id: ExpireOldState
             Status: Enabled
             ExpirationInDays: 7
-            Prefix: !Sub "${StateBasePrefix}/"
-    DeletionPolicy: Retain
 
-# --------------------------------------------------
-# API GATEWAY
-# --------------------------------------------------
+  # API Gateway (HTTP)
   HttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -92,36 +83,33 @@ Resources:
         AllowOrigins: ['*']
         AllowMethods: ['*']
         AllowHeaders: ['*']
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
 
-# --------------------------------------------------
-# SHARED SERVICES - SECURITY & TRANSPARENCY
-# --------------------------------------------------
+  # Shared Services
   SharedServicesFn:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: shared-services
       CodeUri: shared-services/
       Handler: main.lambda_handler
-      Layers: [!Ref NeMoLayer]
+      Layers: 
+        - !Ref CommonLayer
+        - !Ref NeMoLayer
       MemorySize: 2048
       Timeout: 180
+      ReservedConcurrentExecutions: 10
       Policies:
-        - Statement:
-            Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:DeleteObject
-            Resource:
-              - !Sub "arn:aws:s3:::${StateBucketName}/${StateBasePrefix}/*"
+        - S3CrudPolicy:
+            BucketName: !Ref StateBucketName
       Environment:
         Variables:
           OPENAI_API_KEY: !Ref OpenAIKey
           S3_BUCKET_NAME: !Ref StateBucketName
           S3_BASE_PREFIX: !Ref StateBasePrefix
-          S3_SESSIONS_PREFIX: "sessions/"
-          USE_S3: "true"
-          DEBUG: "false"
+          GUARDRAILS_ENABLED: "true"
+          GUARDRAILS_TIMEOUT: "20"
       Events:
         SharedRoutes:
           Type: HttpApi
@@ -142,40 +130,33 @@ Resources:
             Method: ANY
             Path: /session/{proxy+}
 
-# --------------------------------------------------
-# INTENT & REQUIREMENTS AGENT SERVICE
-# --------------------------------------------------
+  # Intent Requirements Service
   IntentServiceFn:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: intent-requirements-service
       CodeUri: intent-requirements-service/
       Handler: main.lambda_handler
-      Layers: [!Ref CrewAILayer]
+      Layers:
+        - !Ref CommonLayer
+        - !Ref CrewAILayer
       MemorySize: 3008
       Timeout: 300
+      ReservedConcurrentExecutions: 10
       EphemeralStorage:
-        Size: 1024
+        Size: 2048
       Policies:
-        - Statement:
-            Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:DeleteObject
-            Resource:
-              - !Sub "arn:aws:s3:::${StateBucketName}/${StateBasePrefix}/*"
+        - S3CrudPolicy:
+            BucketName: !Ref StateBucketName
       Environment:
         Variables:
           OPENAI_API_KEY: !Ref OpenAIKey
           OPENAI_MODEL_NAME: !Ref ModelName
-          USE_S3: "true"
           S3_BUCKET_NAME: !Ref StateBucketName
           S3_BASE_PREFIX: !Ref StateBasePrefix
           S3_MEMORY_PREFIX: "requirements/"
-          CREWAI_TRACING_ENABLED: "true"
+          CREWAI_TELEMETRY_DISABLED: "1"
           MAX_TOKENS: "300"
-          DEBUG: "false"
       Events:
         IntentRoutes:
           Type: HttpApi
@@ -184,31 +165,28 @@ Resources:
             Method: ANY
             Path: /intent/{proxy+}
 
-# --------------------------------------------------
-# MAIN API GATEWAY FUNCTION
-# --------------------------------------------------
+  # API Gateway Lambda (front door)
   ApiGatewayFn:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: stp-api-gateway
       CodeUri: api-gateway/
       Handler: main.lambda_handler
+      Layers:
+        - !Ref CommonLayer
       MemorySize: 1024
       Timeout: 330
+      ReservedConcurrentExecutions: 20
       Policies:
-        - Statement:
-            Effect: Allow
-            Action:
-              - lambda:InvokeFunction
-            Resource:
-              - !GetAtt SharedServicesFn.Arn
-              - !GetAtt IntentServiceFn.Arn
+        - LambdaInvokeFunction:
+            FunctionName: !Ref SharedServicesFn
+        - LambdaInvokeFunction:
+            FunctionName: !Ref IntentServiceFn
       Environment:
         Variables:
-          DOWNSTREAM_MODE: "LAMBDA"
+          DOWNSTREAM_MODE: "LAMBDA"           # Prod default; local override uses HTTP
           INTENT_SERVICE_LAMBDA: !Ref IntentServiceFn
           SHARED_SERVICES_LAMBDA: !Ref SharedServicesFn
-          DEBUG: "false"
       Events:
         TravelPlan:
           Type: HttpApi
@@ -216,6 +194,12 @@ Resources:
             ApiId: !Ref HttpApi
             Method: POST
             Path: /travel/plan
+        SessionInfo:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /travel/session/{session_id}
         HealthCheck:
           Type: HttpApi
           Properties:
@@ -223,22 +207,7 @@ Resources:
             Method: GET
             Path: /health
 
-# --------------------------------------------------
-# OUTPUTS
-# --------------------------------------------------
 Outputs:
-  ApiBaseUrl:
-    Description: Public API Gateway endpoint URL
+  ApiUrl:
+    Description: API Gateway URL
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
-  ApiGatewayFunction:
-    Description: Main API Gateway Lambda ARN
-    Value: !GetAtt ApiGatewayFn.Arn
-  IntentServiceFunction:
-    Description: Intent/Requirements Lambda ARN
-    Value: !GetAtt IntentServiceFn.Arn
-  SharedServicesFunction:
-    Description: Shared Services Lambda ARN
-    Value: !GetAtt SharedServicesFn.Arn
-  StateBucket:
-    Description: S3 bucket used for session + memory state
-    Value: !Ref StateBucketName
