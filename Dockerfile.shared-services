@@ -1,20 +1,23 @@
 FROM public.ecr.aws/lambda/python:3.11
 
-# Install ALL required system dependencies including cmake
-RUN yum install -y gcc gcc-c++ make cmake pkgconfig
+RUN yum install -y gcc gcc-c++ make wget tar gzip
 
-# Copy requirements files from project root context
+RUN cd /tmp && \
+    wget -q https://github.com/Kitware/CMake/releases/download/v3.25.1/cmake-3.25.1-linux-x86_64.tar.gz && \
+    tar -xzf cmake-3.25.1-linux-x86_64.tar.gz && \
+    cp -r cmake-3.25.1-linux-x86_64/bin/* /usr/local/bin/ && \
+    cp -r cmake-3.25.1-linux-x86_64/share/* /usr/local/share/ && \
+    rm -rf /tmp/cmake-3.25.1*
+
 COPY layers/nemo/requirements.txt /tmp/nemo-requirements.txt
 COPY layers/common/requirements.txt /tmp/common-requirements.txt
 COPY shared-services/requirements.txt /tmp/requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r /tmp/common-requirements.txt && \
-    pip install --no-cache-dir -r /tmp/nemo-requirements.txt && \
-    pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --prefer-binary -r /tmp/common-requirements.txt && \
+    pip install --no-cache-dir --prefer-binary -r /tmp/nemo-requirements.txt && \
+    pip install --no-cache-dir --prefer-binary -r /tmp/requirements.txt
 
-# Copy application code
 COPY shared-services/ ${LAMBDA_TASK_ROOT}/
 
-# Set handler
 CMD [ "main.lambda_handler" ]
