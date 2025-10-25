@@ -29,8 +29,7 @@ OWNER="${STACK_OWNER:-$(whoami)}"
 AWS_PROFILE="${AWS_PROFILE:-default}"
 
 # Generate unique bucket name with timestamp
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-BUCKET_NAME="stp-state-${OWNER}-${TIMESTAMP}"
+BUCKET_NAME="stp-state-${OWNER}-prod"  # Static bucket name
 
 echo -e "${GREEN}Configuration:${NC}"
 echo -e "  Stack Name:    ${YELLOW}$STACK_NAME${NC}"

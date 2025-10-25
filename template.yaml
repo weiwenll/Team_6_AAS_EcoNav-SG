@@ -23,6 +23,7 @@ Parameters:
     Description: OpenAI model to use
   StateBucketName:
     Type: String
+    Default: stp-state-prod
     Description: S3 bucket for application state (must be globally unique)
   StateBasePrefix:
     Type: String
@@ -37,6 +38,8 @@ Resources:
   # S3 Bucket for state
   StateBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Ref StateBucketName
       VersioningConfiguration:
