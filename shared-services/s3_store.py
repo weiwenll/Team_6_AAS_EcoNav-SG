@@ -15,7 +15,9 @@ S3_BASE_PREFIX = os.getenv("S3_BASE_PREFIX", "").strip().strip("/")
 # Service-specific prefixes (can be plain names like "sessions/" or already nested)
 S3_SESSIONS_PREFIX = os.getenv("S3_SESSIONS_PREFIX", "sessions/").strip()
 
+# FIXED: Handle empty string for S3_ENDPOINT (AWS expects None, not "")
 S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT")  # for LocalStack (optional)
+S3_ENDPOINT = S3_ENDPOINT if S3_ENDPOINT and S3_ENDPOINT.strip() else None
 
 _s3 = boto3.client("s3", region_name=AWS_REGION, endpoint_url=S3_ENDPOINT)
 

@@ -16,14 +16,18 @@ Parameters:
   OpenAIKey:
     Type: String
     NoEcho: true
+    Description: OpenAI API Key for LLM calls
   ModelName:
     Type: String
     Default: gpt-4o-mini
+    Description: OpenAI model to use
   StateBucketName:
     Type: String
+    Description: S3 bucket for application state (must be globally unique)
   StateBasePrefix:
     Type: String
     Default: prod
+    Description: Prefix for S3 keys (e.g., dev, staging, prod)
   AwsS3Endpoint:
     Type: String
     Default: ""
@@ -37,6 +41,11 @@ Resources:
       BucketName: !Ref StateBucketName
       VersioningConfiguration:
         Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
       LifecycleConfiguration:
         Rules:
           - Id: ArchiveOldState
@@ -66,8 +75,8 @@ Resources:
     Properties:
       FunctionName: shared-services
       PackageType: Image
-      MemorySize: 2048
-      Timeout: 180
+      MemorySize: 3008
+      Timeout: 300
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref StateBucketName
@@ -76,6 +85,8 @@ Resources:
           OPENAI_API_KEY: !Ref OpenAIKey
           S3_BUCKET_NAME: !Ref StateBucketName
           S3_BASE_PREFIX: !Ref StateBasePrefix
+          AWS_S3_ENDPOINT: !Ref AwsS3Endpoint
+          USE_S3: "true"
           GUARDRAILS_ENABLED: "true"
           GUARDRAILS_TIMEOUT: "20"
       Events:
@@ -120,7 +131,7 @@ Resources:
       MemorySize: 3008
       Timeout: 300
       EphemeralStorage:
-        Size: 2048
+        Size: 5120
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref StateBucketName
@@ -131,6 +142,8 @@ Resources:
           S3_BUCKET_NAME: !Ref StateBucketName
           S3_BASE_PREFIX: !Ref StateBasePrefix
           S3_MEMORY_PREFIX: "requirements/"
+          AWS_S3_ENDPOINT: !Ref AwsS3Endpoint
+          USE_S3: "true"
           CREWAI_TELEMETRY_DISABLED: "1"
           MAX_TOKENS: "300"
       Events:
@@ -140,10 +153,19 @@ Resources:
             ApiId: !Ref HttpApi
             Method: ANY
             Path: /intent/{proxy+}
+      LoggingConfig:
+        LogGroup: !Sub '/aws/lambda/${AWS::StackName}-intent-service'
+        LogFormat: JSON
     Metadata:
       Dockerfile: Dockerfile.intent-service
       DockerContext: ./
       DockerTag: latest
+
+  IntentServiceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-intent-service'
+      RetentionInDays: 7
 
   # API Gateway Lambda - Docker Container
   ApiGatewayFn:
@@ -151,7 +173,7 @@ Resources:
     Properties:
       FunctionName: stp-api-gateway
       PackageType: Image
-      MemorySize: 1024
+      MemorySize: 2048
       Timeout: 330
       Policies:
         - Version: '2012-10-17'
@@ -162,11 +184,17 @@ Resources:
               Resource:
                 - !GetAtt SharedServicesFn.Arn
                 - !GetAtt IntentServiceFn.Arn
+        - S3CrudPolicy:
+            BucketName: !Ref StateBucketName
       Environment:
         Variables:
           DOWNSTREAM_MODE: "LAMBDA"
           INTENT_SERVICE_LAMBDA: !Ref IntentServiceFn
           SHARED_SERVICES_LAMBDA: !Ref SharedServicesFn
+          S3_BUCKET_NAME: !Ref StateBucketName
+          S3_BASE_PREFIX: !Ref StateBasePrefix
+          AWS_S3_ENDPOINT: !Ref AwsS3Endpoint
+          USE_S3: "true"
       Events:
         TravelPlan:
           Type: HttpApi
@@ -186,10 +214,19 @@ Resources:
             ApiId: !Ref HttpApi
             Method: GET
             Path: /health
+      LoggingConfig:
+        LogGroup: !Sub '/aws/lambda/${AWS::StackName}-api-gateway'
+        LogFormat: JSON
     Metadata:
       Dockerfile: Dockerfile.api-gateway
       DockerContext: ./
       DockerTag: latest
+
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-api-gateway'
+      RetentionInDays: 7
 
 Outputs:
   ApiUrl:

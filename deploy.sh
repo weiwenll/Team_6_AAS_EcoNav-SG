@@ -1,7 +1,23 @@
 #!/bin/bash
 set -euo pipefail
 
-# ---- Config -----------------------------------------------------
+# ================================================================================
+# IMPROVED DEPLOY SCRIPT WITH COMPREHENSIVE ERROR HANDLING
+# ================================================================================
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║  SUSTAINABLE TRAVEL PLANNER - AWS DEPLOYMENT SCRIPT      ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# ---- Configuration -----------------------------------------------------
 export SAM_CLI_TELEMETRY=0
 export DOCKER_BUILDKIT=0
 export COMPOSE_DOCKER_CLI_BUILD=0
@@ -12,76 +28,227 @@ OPENAI_KEY="${OPENAI_KEY:-}"
 OWNER="${STACK_OWNER:-$(whoami)}"
 AWS_PROFILE="${AWS_PROFILE:-default}"
 
-# App state bucket (your app writes sessions here; SAM will still use its own managed bucket)
-BUCKET_NAME="stp-state-${OWNER}-${REGION}-$(date +%Y%m%d)"
+# Generate unique bucket name with timestamp
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+BUCKET_NAME="stp-state-${OWNER}-${TIMESTAMP}"
 
-# Colors
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+echo -e "${GREEN}Configuration:${NC}"
+echo -e "  Stack Name:    ${YELLOW}$STACK_NAME${NC}"
+echo -e "  Region:        ${YELLOW}$REGION${NC}"
+echo -e "  S3 Bucket:     ${YELLOW}$BUCKET_NAME${NC}"
+echo -e "  AWS Profile:   ${YELLOW}$AWS_PROFILE${NC}"
+echo ""
 
-echo -e "${GREEN}🚀 Deploying Travel Planner Stack${NC}"
-[ -n "$OPENAI_KEY" ] || { echo -e "${RED}❌ OPENAI_KEY not set${NC}"; exit 1; }
+# ---- Validate Prerequisites --------------------------------------------
+echo -e "${BLUE}[1/7] Validating prerequisites...${NC}"
 
-echo -e "${YELLOW}   S3 Bucket (app state): $BUCKET_NAME${NC}"
-
-# ---- Clean previous build --------------------------------------
-echo -e "${YELLOW}📦 Cleaning previous builds...${NC}"
-rm -rf .aws-sam || true
-docker image rm -f apigatewayfn:latest sharedservicesfn:latest intentservicefn:latest 2>/dev/null || true
-
-# ---- Build ------------------------------------------------------
-echo -e "${YELLOW}🧱 Building container images (SAM, in Docker)...${NC}"
-sam build --use-container --parallel
-
-# Guard: fail fast if any reserved env keys made it into the compiled template
-if grep -E -n 'AWS_REGION|AWS_DEFAULT_REGION|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|LAMBDA_' \
-  .aws-sam/build/template.yaml >/dev/null 2>&1; then
-  echo -e "${RED}❌ Reserved Lambda/AWS env var found in compiled template (.aws-sam/build/template.yaml).${NC}"
-  echo "   Remove any of these from Environment.Variables in your template: AWS_*, LAMBDA_*"
-  exit 1
+if [ -z "$OPENAI_KEY" ]; then
+    echo -e "${RED}❌ ERROR: OPENAI_KEY environment variable is not set${NC}"
+    echo ""
+    echo "Please set your OpenAI API key:"
+    echo "  export OPENAI_KEY='your-key-here'"
+    exit 1
 fi
 
-# ---- Handle bad stack states -----------------------------------
+if ! command -v sam &> /dev/null; then
+    echo -e "${RED}❌ ERROR: AWS SAM CLI not found${NC}"
+    echo "Install from: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html"
+    exit 1
+fi
+
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}❌ ERROR: Docker not found${NC}"
+    exit 1
+fi
+
+if ! command -v aws &> /dev/null; then
+    echo -e "${RED}❌ ERROR: AWS CLI not found${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ All prerequisites found${NC}"
+echo ""
+
+# ---- Clean Previous Build ----------------------------------------------
+echo -e "${BLUE}[2/7] Cleaning previous builds...${NC}"
+
+if [ -d ".aws-sam" ]; then
+    echo "Removing .aws-sam directory..."
+    rm -rf .aws-sam
+fi
+
+# Remove Docker images to force fresh builds
+echo "Removing old Docker images..."
+docker image rm -f \
+    apigatewayfn:latest \
+    sharedservicesfn:latest \
+    intentservicefn:latest \
+    2>/dev/null || true
+
+echo -e "${GREEN}✅ Cleanup complete${NC}"
+echo ""
+
+# ---- Handle Existing Stack ---------------------------------------------
+echo -e "${BLUE}[3/7] Checking for existing stack...${NC}"
+
 status="$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" --region "$REGION" --profile "$AWS_PROFILE" \
-  --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "NOT_FOUND")"
+    --stack-name "$STACK_NAME" \
+    --region "$REGION" \
+    --profile "$AWS_PROFILE" \
+    --query 'Stacks[0].StackStatus' \
+    --output text 2>/dev/null || echo "NOT_FOUND")"
 
 if [[ "$status" == "ROLLBACK_COMPLETE" ]]; then
-  echo -e "${YELLOW}⚠️  Stack '$STACK_NAME' is ROLLBACK_COMPLETE. Deleting before re-deploy...${NC}"
-  aws cloudformation delete-stack --stack-name "$STACK_NAME" --region "$REGION" --profile "$AWS_PROFILE"
-  aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME" --region "$REGION" --profile "$AWS_PROFILE"
+    echo -e "${YELLOW}⚠️  Stack is in ROLLBACK_COMPLETE state${NC}"
+    echo "Deleting stack before re-deploy..."
+    
+    aws cloudformation delete-stack \
+        --stack-name "$STACK_NAME" \
+        --region "$REGION" \
+        --profile "$AWS_PROFILE"
+    
+    echo "Waiting for stack deletion..."
+    aws cloudformation wait stack-delete-complete \
+        --stack-name "$STACK_NAME" \
+        --region "$REGION" \
+        --profile "$AWS_PROFILE"
+    
+    echo -e "${GREEN}✅ Old stack deleted${NC}"
+    
+elif [[ "$status" != "NOT_FOUND" ]]; then
+    echo -e "${YELLOW}⚠️  Existing stack found with status: $status${NC}"
+    echo "Stack will be updated (not deleted)"
 fi
-
-# ---- Deploy -----------------------------------------------------
-echo -e "${YELLOW}🚀 Deploying to AWS...${NC}"
-sam deploy \
-  --template-file .aws-sam/build/template.yaml \
-  --stack-name "$STACK_NAME" \
-  --capabilities CAPABILITY_IAM \
-  --region "$REGION" \
-  --resolve-s3 \
-  --resolve-image-repos \
-  --parameter-overrides \
-    OpenAIKey="$OPENAI_KEY" \
-    ModelName=gpt-4o-mini \
-    StateBucketName="$BUCKET_NAME" \
-    StateBasePrefix=prod \
-  --no-confirm-changeset \
-  --no-fail-on-empty-changeset \
-  --profile "$AWS_PROFILE"
 
 echo ""
 
-# ---- Fetch API URL output (ensure template defines Output 'ApiUrl') ----
-echo -e "${YELLOW}📍 Getting API URL...${NC}"
+# ---- Build Container Images --------------------------------------------
+echo -e "${BLUE}[4/7] Building container images...${NC}"
+echo -e "${YELLOW}This may take 5-10 minutes on first build...${NC}"
+echo ""
+
+# Run SAM build with progress indication
+if sam build --use-container --parallel; then
+    echo ""
+    echo -e "${GREEN}✅ Container images built successfully${NC}"
+else
+    echo ""
+    echo -e "${RED}❌ Build failed${NC}"
+    echo ""
+    echo "Common issues:"
+    echo "  1. Check Dockerfile syntax"
+    echo "  2. Ensure requirements files exist"
+    echo "  3. Check Docker daemon is running"
+    echo "  4. Review build logs above for details"
+    exit 1
+fi
+
+echo ""
+
+# ---- Validate Build Output ---------------------------------------------
+echo -e "${BLUE}[5/7] Validating build output...${NC}"
+
+if [ ! -f ".aws-sam/build/template.yaml" ]; then
+    echo -e "${RED}❌ Built template not found${NC}"
+    exit 1
+fi
+
+# Check for reserved environment variable names
+if grep -E -n 'AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|LAMBDA_RUNTIME' \
+    .aws-sam/build/template.yaml >/dev/null 2>&1; then
+    echo -e "${RED}❌ ERROR: Reserved Lambda environment variable found in template${NC}"
+    echo "Remove these from Environment.Variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, LAMBDA_*"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Build validation passed${NC}"
+echo ""
+
+# ---- Deploy to AWS -----------------------------------------------------
+echo -e "${BLUE}[6/7] Deploying to AWS...${NC}"
+echo -e "${YELLOW}This will take 10-15 minutes...${NC}"
+echo ""
+
+if sam deploy \
+    --template-file .aws-sam/build/template.yaml \
+    --stack-name "$STACK_NAME" \
+    --capabilities CAPABILITY_IAM \
+    --region "$REGION" \
+    --resolve-s3 \
+    --resolve-image-repos \
+    --parameter-overrides \
+        OpenAIKey="$OPENAI_KEY" \
+        ModelName=gpt-4o-mini \
+        StateBucketName="$BUCKET_NAME" \
+        StateBasePrefix=prod \
+    --no-confirm-changeset \
+    --no-fail-on-empty-changeset \
+    --profile "$AWS_PROFILE"; then
+    
+    echo ""
+    echo -e "${GREEN}✅ Deployment successful${NC}"
+else
+    echo ""
+    echo -e "${RED}❌ Deployment failed${NC}"
+    echo ""
+    echo "To view CloudFormation events:"
+    echo "  aws cloudformation describe-stack-events --stack-name $STACK_NAME --region $REGION --profile $AWS_PROFILE"
+    exit 1
+fi
+
+echo ""
+
+# ---- Get API URL -------------------------------------------------------
+echo -e "${BLUE}[7/7] Retrieving API URL...${NC}"
+
 API_URL="$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" --region "$REGION" --profile "$AWS_PROFILE" \
-  --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null || echo "")"
+    --stack-name "$STACK_NAME" \
+    --region "$REGION" \
+    --profile "$AWS_PROFILE" \
+    --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' \
+    --output text 2>/dev/null || echo "")"
+
+echo ""
+echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║                  DEPLOYMENT COMPLETE                      ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
+echo ""
 
 if [ -n "$API_URL" ] && [ "$API_URL" != "None" ]; then
-  echo -e "${GREEN}✅ Deployment complete!${NC}"
-  echo -e "${GREEN}🌐 API URL: $API_URL${NC}"
-  echo -e "${YELLOW}Test:${NC}  curl \"$API_URL/health\""
+    echo -e "${GREEN}🌐 API Gateway URL:${NC}"
+    echo -e "   ${YELLOW}$API_URL${NC}"
+    echo ""
+    echo -e "${GREEN}📦 S3 Bucket:${NC}"
+    echo -e "   ${YELLOW}$BUCKET_NAME${NC}"
+    echo ""
+    echo -e "${BLUE}🧪 Test Commands:${NC}"
+    echo ""
+    echo -e "${YELLOW}# Health Check${NC}"
+    echo "curl -s \"$API_URL/health\" | jq"
+    echo ""
+    echo -e "${YELLOW}# Simple Greeting${NC}"
+    echo "curl -X POST \"$API_URL/travel/plan\" \\"
+    echo "  -H \"Content-Type: application/json\" \\"
+    echo "  -d '{\"user_input\":\"Hello!\",\"session_id\":null}' | jq"
+    echo ""
+    echo -e "${YELLOW}# Complete Travel Plan${NC}"
+    echo "curl -X POST \"$API_URL/travel/plan\" \\"
+    echo "  -H \"Content-Type: application/json\" \\"
+    echo "  -d '{\"user_input\":\"I want to visit Singapore from Dec 20-25, 2025 with a budget of 2000 SGD, relaxed pace\",\"session_id\":null}' | jq"
+    echo ""
+    echo -e "${BLUE}📊 Monitor Logs:${NC}"
+    echo "sam logs --stack-name $STACK_NAME --region $REGION --tail"
+    echo ""
+    echo -e "${BLUE}🔍 View Stack Resources:${NC}"
+    echo "aws cloudformation describe-stack-resources --stack-name $STACK_NAME --region $REGION"
+    echo ""
 else
-  echo -e "${YELLOW}⚠️  Deployed, but couldn't find 'ApiUrl' output.${NC}"
-  echo "   Check your template Outputs or run: sam list endpoints"
+    echo -e "${YELLOW}⚠️  Could not retrieve API URL${NC}"
+    echo ""
+    echo "To find your API URL manually:"
+    echo "  aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query 'Stacks[0].Outputs'"
 fi
+
+echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║  Deployment script completed successfully                 ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"

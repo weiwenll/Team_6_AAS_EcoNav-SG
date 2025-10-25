@@ -74,11 +74,7 @@ def _store_final_json_in_s3(session_id: str, final_json: Dict[str, Any]) -> str:
     """Store final completion JSON in S3"""
     try:
         s3 = _get_s3_client()
-        
-        # Build S3 key: dev/final/abc123.json
         key = f"{S3_BASE_PREFIX}/final/{session_id}.json" if S3_BASE_PREFIX else f"final/{session_id}.json"
-        
-        # Upload to S3
         s3.put_object(
             Bucket=S3_BUCKET_NAME,
             Key=key,
@@ -86,10 +82,8 @@ def _store_final_json_in_s3(session_id: str, final_json: Dict[str, Any]) -> str:
             ContentType="application/json",
             ServerSideEncryption="AES256"
         )
-        
         print(f"✅ Final JSON stored in S3: s3://{S3_BUCKET_NAME}/{key}")
         return key
-        
     except Exception as e:
         print(f"❌ Error storing final JSON in S3: {e}")
         raise
@@ -98,14 +92,10 @@ def _get_session_from_s3(session_id: str) -> Optional[Dict[str, Any]]:
     """Retrieve session data from S3 to get conversation history"""
     try:
         s3 = _get_s3_client()
-        
-        # Try requirements/ first (has conversation_history)
         key = f"{S3_BASE_PREFIX}/requirements/{session_id}.json" if S3_BASE_PREFIX else f"requirements/{session_id}.json"
-        
         obj = s3.get_object(Bucket=S3_BUCKET_NAME, Key=key)
         body = obj["Body"].read().decode("utf-8")
         return json.loads(body)
-        
     except Exception as e:
         print(f"⚠️ Could not retrieve session from S3: {e}")
         return None
@@ -115,30 +105,21 @@ def _get_session_from_s3(session_id: str) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 async def _call_planning_agent(final_json: Dict[str, Any]) -> Dict[str, Any]:
     """Call downstream planning agent with final JSON"""
-    
-    if not PLANNING_AGENT_ENABLED:
+    if not PLANNING_AGENT_ENABLED or str(PLANNING_AGENT_ENABLED).lower() == "false":
         print("ℹ️ Planning agent is disabled (PLANNING_AGENT_ENABLED=false)")
         return {"status": "skipped", "message": "Planning agent not enabled"}
-    
     if not PLANNING_AGENT_URL:
         print("⚠️ PLANNING_AGENT_URL not configured")
         return {"status": "error", "message": "Planning agent URL not configured"}
-    
     try:
         print(f"📤 Calling planning agent at: {PLANNING_AGENT_URL}")
-        
         import httpx
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{PLANNING_AGENT_URL}/process",  # Adjust endpoint as needed
-                json=final_json
-            )
+            response = await client.post(f"{PLANNING_AGENT_URL}/process", json=final_json)
             response.raise_for_status()
             result = response.json()
-            
         print(f"✅ Planning agent responded successfully")
         return {"status": "success", "data": result}
-        
     except Exception as e:
         print(f"❌ Error calling planning agent: {e}")
         return {"status": "error", "message": str(e)}
@@ -150,7 +131,6 @@ class TravelPlanningRequest(BaseModel):
     user_input: str
     session_id: Optional[str] = None
 
-
 class TravelPlanningResponse(BaseModel):
     success: bool
     response: str
@@ -159,8 +139,9 @@ class TravelPlanningResponse(BaseModel):
     conversation_state: str
     trust_score: float
     error: Optional[str] = None
-    collection_complete: bool = Field(default=False)  # NEW
-
+    collection_complete: bool = Field(default=False)
+    final_json_s3_key: Optional[str] = None
+    planning_agent_status: Optional[str] = None
 
 # ---------------------------------------------------------------------------
 # Error handling decorator
@@ -170,11 +151,25 @@ def handle_errors(func):
     async def wrapper(*args, **kwargs):
         try:
             return await func(*args, **kwargs)
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"[ERROR] {func.__name__}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     return wrapper
 
+def _ensure_ok(res: dict, step: str):
+    """
+    Ensure a downstream call succeeded.
+    - If service_client returned {"success": False, ...} or {"status_code": >=400}, raise 502.
+    """
+    if not isinstance(res, dict):
+        return
+    if res.get("success") is False:
+        detail = res.get("error") or f"{step} failed"
+        raise HTTPException(status_code=502, detail=detail)
+    if res.get("status_code") and int(res["status_code"]) >= 400:
+        raise HTTPException(status_code=502, detail=f"{step} HTTP {res['status_code']}: {res.get('error')}")
 
 # ---------------------------------------------------------------------------
 # Main Gateway Class
@@ -194,10 +189,8 @@ class TravelGateway:
     ) -> Dict[str, Any]:
         """Build final structured JSON for downstream agent"""
         try:
-            # Get full session data from S3 to extract conversation history
             session_data = _get_session_from_s3(session_id)
-            
-            # Extract all user messages and concatenate
+
             user_messages = []
             if session_data and "conversation_history" in session_data:
                 user_messages = [
@@ -205,25 +198,21 @@ class TravelGateway:
                     for msg in session_data["conversation_history"] 
                     if msg.get("role") == "user"
                 ]
-            
             concatenated_message = "\n".join(user_messages) if user_messages else ""
-            
-            # Build final JSON
+
             final_json = {
                 "status_code": status_code,
-                "interest": interests,  # List of interests
+                "interest": interests,
                 "message": concatenated_message,
                 "json_filename": f"sessions/{session_id}.json",
                 "session_id": session_id,
                 "timestamp": datetime.now().isoformat(),
-                "requirements": requirements_data.get("requirements", {})  # Full requirements
+                "requirements": requirements_data.get("requirements", {})
             }
-            
             return final_json
-            
+
         except Exception as e:
             print(f"❌ Error building final JSON: {e}")
-            # Return error structure
             return {
                 "status_code": 500,
                 "interest": [],
@@ -240,6 +229,7 @@ class TravelGateway:
         # Step 1: Session initialization
         if not session_id:
             session_data = create_session({"user_id": None})
+            _ensure_ok(session_data, "session create")
             session_id = session_data.get("session_id", "unknown")
 
         print(f"Processing input: {user_input[:60]}... (session: {session_id})")
@@ -247,11 +237,13 @@ class TravelGateway:
         try:
             # Step 2: Input security validation
             security_ok = validate_input({"text": user_input, "user_context": {"session_id": session_id}})
+            _ensure_ok(security_ok, "input validation")
             if not security_ok.get("is_safe", True):
                 return self._create_blocked_response(session_id, "input_blocked")
 
             # Step 3: Intent classification
             intent_data = classify_intent({"user_input": user_input, "session_context": {"session_id": session_id}})
+            _ensure_ok(intent_data, "classify intent")
             intent = intent_data.get("intent", "unknown")
             print(f"Intent classified: {intent}")
 
@@ -261,16 +253,18 @@ class TravelGateway:
                 "intent": intent,
                 "session_context": {"session_id": session_id},
             })
+            _ensure_ok(req_data, "gather requirements")
 
-            # NEW: Check for completion
             completion_status = req_data.get("completion_status", "incomplete")
             is_complete = (completion_status == "complete")
-            
+
             # Step 5: Output security validation
             validated_output = validate_output({
                 "response": req_data.get("response", ""),
                 "context": {"session_id": session_id},
             })
+            _ensure_ok(validated_output, "output validation")
+
             response_text = (
                 validated_output.get("filtered_response", req_data.get("response", ""))
                 if not validated_output.get("is_safe", True)
@@ -278,7 +272,7 @@ class TravelGateway:
             )
 
             # Step 6: Update session + trust score
-            update_session(
+            upd = update_session(
                 session_id,
                 {
                     "conversation_state": self._get_conversation_state(intent, req_data.get("requirements_extracted", False)),
@@ -287,6 +281,8 @@ class TravelGateway:
                     "requirements_complete": req_data.get("requirements_extracted", False),
                 },
             )
+            _ensure_ok(upd, "update session")
+
             trust_score = 1.0
 
             # NEW: Handle completion - Generate final JSON and call downstream agent
@@ -294,28 +290,22 @@ class TravelGateway:
                 print("\n" + "=" * 80)
                 print("🎉 REQUIREMENTS COLLECTION COMPLETE - FINALIZING")
                 print("=" * 80)
-                
-                # Build final structured JSON
+
                 final_json = self._build_final_json(
                     session_id=session_id,
                     requirements_data=req_data.get("requirements_data", {}),
                     interests=req_data.get("interests", []),
                     status_code=200
                 )
-                
-                # Print final JSON to terminal
+
                 print("\n📋 FINAL JSON FOR DOWNSTREAM AGENT:")
                 print(json.dumps(final_json, indent=2, ensure_ascii=False))
                 print("\n" + "=" * 80 + "\n")
-                
-                # Store final JSON in S3
+
                 s3_key = _store_final_json_in_s3(session_id, final_json)
-                
-                # Call downstream planning agent
                 agent_response = await _call_planning_agent(final_json)
                 print(f"📬 Planning agent response: {agent_response.get('status')}")
-                
-                # Return completion response
+
                 return {
                     "success": True,
                     "response": response_text,
@@ -323,7 +313,7 @@ class TravelGateway:
                     "intent": intent,
                     "conversation_state": "requirements_complete",
                     "trust_score": trust_score,
-                    "collection_complete": True,  # Signal to UI
+                    "collection_complete": True,
                     "final_json_s3_key": s3_key,
                     "planning_agent_status": agent_response.get("status")
                 }
@@ -339,6 +329,8 @@ class TravelGateway:
                 "collection_complete": False
             }
 
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"❌ Processing error: {e}")
             return self._create_error_response(session_id, str(e))
@@ -395,11 +387,9 @@ app.add_middleware(
 
 gateway = TravelGateway()
 
-
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "mode": DOWNSTREAM_MODE, "service": "travel-gateway"}
-
 
 @app.post("/travel/plan", response_model=TravelPlanningResponse)
 @handle_errors
@@ -407,13 +397,13 @@ async def plan_travel(request: TravelPlanningRequest):
     result = await gateway.process_input(request.user_input, request.session_id)
     return TravelPlanningResponse(**result)
 
-
 @app.get("/travel/session/{session_id}")
 @handle_errors
 async def get_session_info(session_id: str):
     """Return session info proxied from shared-services (HTTP) or shared-services Lambda."""
-    return get_session(session_id)
-
+    res = get_session(session_id)
+    _ensure_ok(res, "get session")
+    return res
 
 @app.get("/")
 async def root():
@@ -432,13 +422,11 @@ async def root():
         "routes": ["/travel/plan", "/travel/session/{session_id}", "/health"],
     }
 
-
 # ---------------------------------------------------------------------------
 # Lambda Handler (for AWS SAM)
 # ---------------------------------------------------------------------------
 from mangum import Mangum
 lambda_handler = Mangum(app)
-
 
 # ---------------------------------------------------------------------------
 # Local development entrypoint

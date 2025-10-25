@@ -1,6 +1,11 @@
 # intent-requirements-service/main.py
 
 import os
+# CRITICAL: Set HOME to /tmp for Lambda (writable directory)
+import os
+os.environ['HOME'] = '/tmp'
+os.environ['TMPDIR'] = '/tmp'
+
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 

@@ -1,6 +1,6 @@
 # shared-services/main.py
 
-import os, sys
+import os, sys, json
 from datetime import datetime
 from functools import wraps
 from typing import Dict, Any, Optional
@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from fastapi.testclient import TestClient
 
 from security_pipeline import SecurityPipeline
 from transparency import TransparencyEngine
@@ -215,8 +216,36 @@ async def root():
         "endpoints": ["/health", "/security/*", "/session/*", "/transparency/*"],
     }
 
+# --- Lambda adapter: support both APIGW proxy via Mangum AND direct-invoke shape ---
 from mangum import Mangum
-lambda_handler = Mangum(app)
+_mangum = Mangum(app)
+
+def lambda_handler(event, context):
+    """
+    Supports:
+    1) Direct invokes (simple shape): {"path": "/session/create", "httpMethod": "POST", "body": {...}}
+    2) API Gateway/HttpApi proxy events (handled by Mangum)
+    """
+    if isinstance(event, dict) and "path" in event:
+        path = event.get("path", "")
+        method = (event.get("httpMethod") or "POST").upper()
+        body = event.get("body") or {}
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except Exception:
+                body = {}
+
+        with TestClient(app) as c:
+            resp = c.request(method, path, json=body if method in ("POST", "PUT") else None)
+            try:
+                return resp.json()
+            except Exception:
+                # Ensure something sensible is returned
+                return {"status_code": resp.status_code, "text": resp.text}
+
+    # Default to APIGW proxy handling
+    return _mangum(event, context)
 
 if __name__ == "__main__":
     import uvicorn

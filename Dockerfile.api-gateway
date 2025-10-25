@@ -1,13 +1,32 @@
 FROM public.ecr.aws/lambda/python:3.11
 
+# Copy requirement files (FIXED: use requirements-lambda.txt)
 COPY layers/common/requirements.txt /tmp/common-requirements.txt
-COPY api-gateway/requirements.txt /tmp/requirements.txt
+COPY api-gateway/requirements-lambda.txt /tmp/requirements.txt
 
-RUN pip install --no-cache-dir -r /tmp/common-requirements.txt && \
-    pip install --no-cache-dir requests==2.31.0 && \
-    pip install --no-cache-dir -r /tmp/requirements.txt
+# Install dependencies with better error handling
+RUN pip install --upgrade pip setuptools wheel && \
+    echo "Installing common dependencies..." && \
+    pip install --no-cache-dir --prefer-binary -r /tmp/common-requirements.txt && \
+    echo "Installing requests..." && \
+    pip install --no-cache-dir --prefer-binary requests==2.31.0 && \
+    echo "Installing gateway-specific dependencies..." && \
+    pip install --no-cache-dir --prefer-binary -r /tmp/requirements.txt
 
+# CRITICAL: Verify imports work before deploying (ADDED)
+RUN echo "Verifying critical imports..." && \
+    python -c "import fastapi; print('✅ fastapi imported')" && \
+    python -c "import boto3; print('✅ boto3 imported')" && \
+    python -c "import httpx; print('✅ httpx imported')" && \
+    python -c "import requests; print('✅ requests imported')" && \
+    python -c "import mangum; print('✅ mangum imported')" && \
+    echo "✅ All critical imports successful"
+
+# Copy application code
 COPY api-gateway/ ${LAMBDA_TASK_ROOT}/
 COPY common/ ${LAMBDA_TASK_ROOT}/common/
+
+# Set working directory
+WORKDIR ${LAMBDA_TASK_ROOT}
 
 CMD [ "main.lambda_handler" ]

@@ -1,7 +1,9 @@
 FROM public.ecr.aws/lambda/python:3.11
 
-RUN yum install -y gcc gcc-c++ make wget tar gzip
+# Install build dependencies
+RUN yum install -y gcc gcc-c++ make wget tar gzip git
 
+# Install CMake
 RUN cd /tmp && \
     wget -q https://github.com/Kitware/CMake/releases/download/v3.25.1/cmake-3.25.1-linux-x86_64.tar.gz && \
     tar -xzf cmake-3.25.1-linux-x86_64.tar.gz && \
@@ -9,15 +11,32 @@ RUN cd /tmp && \
     cp -r cmake-3.25.1-linux-x86_64/share/* /usr/local/share/ && \
     rm -rf /tmp/cmake-3.25.1*
 
+# Copy ALL requirement files (FIXED: use requirements-lambda.txt)
 COPY layers/nemo/requirements.txt /tmp/nemo-requirements.txt
 COPY layers/common/requirements.txt /tmp/common-requirements.txt
-COPY shared-services/requirements.txt /tmp/requirements.txt
+COPY shared-services/requirements-lambda.txt /tmp/requirements.txt
 
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir --prefer-binary -r /tmp/common-requirements.txt && \
-    pip install --no-cache-dir --prefer-binary -r /tmp/nemo-requirements.txt && \
-    pip install --no-cache-dir --prefer-binary -r /tmp/requirements.txt
+# Install dependencies in order with retries and better error handling
+RUN pip install --upgrade pip setuptools wheel && \
+    echo "Installing common dependencies..." && \
+    pip install --no-cache-dir --prefer-binary --retries 3 -r /tmp/common-requirements.txt && \
+    echo "Installing nemo dependencies..." && \
+    pip install --no-cache-dir --prefer-binary --retries 3 -r /tmp/nemo-requirements.txt && \
+    echo "Installing service-specific dependencies..." && \
+    pip install --no-cache-dir --prefer-binary --retries 3 -r /tmp/requirements.txt
 
+# CRITICAL: Verify imports work before deploying (ADDED)
+RUN echo "Verifying critical imports..." && \
+    python -c "import nemoguardrails; print('✅ nemoguardrails imported')" && \
+    python -c "from nemoguardrails import RailsConfig, LLMRails; print('✅ nemoguardrails classes imported')" && \
+    python -c "import fastapi; print('✅ fastapi imported')" && \
+    python -c "import boto3; print('✅ boto3 imported')" && \
+    echo "✅ All critical imports successful"
+
+# Copy application code (FIXED: include guardrails_config directory)
 COPY shared-services/ ${LAMBDA_TASK_ROOT}/
+
+# Set working directory
+WORKDIR ${LAMBDA_TASK_ROOT}
 
 CMD [ "main.lambda_handler" ]
