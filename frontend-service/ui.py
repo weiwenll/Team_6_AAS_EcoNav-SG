@@ -75,6 +75,13 @@ def initialize_session():
     
     if "final_json_info" not in st.session_state:
         st.session_state.final_json_info = None
+    
+    # NEW: Add these two lines
+    if "mandatory_complete" not in st.session_state:
+        st.session_state.mandatory_complete = False
+    
+    if "optional_progress" not in st.session_state:
+        st.session_state.optional_progress = "0/6"
 
 def display_sidebar():
     """Display sidebar with session info and controls"""
@@ -118,11 +125,12 @@ def display_sidebar():
         # NEW SESSION: Completely fresh start
         if st.button("🆕 New Session", key="new_session_btn", use_container_width=True, type="primary"):
             # Reset EVERYTHING for a fresh start
-            st.session_state.session_id = None  # Force new session creation
+            st.session_state.session_id = None
             st.session_state.messages = []
             st.session_state.collection_complete = False
             st.session_state.final_json_info = None
-            # Streamlit will automatically rerun when session state changes
+            st.session_state.mandatory_complete = False
+            st.session_state.optional_progress = "0/6"   
         
         st.caption("Starts a completely new travel planning session")
         
@@ -148,10 +156,14 @@ def display_chat_interface():
     """Main chat interface"""
     st.subheader("Chat with Travel Assistant")
     
-    # Show completion banner if complete
+    # Show completion banner based on status
     if st.session_state.collection_complete:
-        st.success("🎉 **All travel requirements collected!** Your information has been processed and sent to the planning agent.")
+        st.success("🎉 **All requirements collected!** Your complete travel plan is ready.")
         st.info("💡 Click **🆕 New Session** in the sidebar to plan another trip.")
+    elif st.session_state.get("mandatory_complete", False):
+        optional_progress = st.session_state.get("optional_progress", "0/6")
+        st.info(f"✅ **Core details captured!** Planning in progress. Optional fields: {optional_progress}")
+        st.caption("💬 Keep chatting to add preferences (eco, dietary, interests, etc.)")
     
     # Display message history
     for message in st.session_state.messages:
@@ -193,17 +205,22 @@ def process_user_input(user_input: str):
             st.session_state.session_id = result["session_id"]
         
         # Check for collection completion
+        if result.get("completion_status") == "mandatory_complete":
+            st.session_state.mandatory_complete = True
+            st.session_state.optional_progress = result.get("optional_progress", "0/6")
+
+        # Check for full completion (lock textbox)
         if result.get("collection_complete", False):
             st.session_state.collection_complete = True
             
-            # Store final JSON info for display
+            # Store final JSON info
             st.session_state.final_json_info = {
                 "session_id": result.get("session_id"),
                 "s3_key": result.get("final_json_s3_key"),
                 "planning_agent_status": result.get("planning_agent_status"),
             }
             
-            # Show completion indicator
+            # Show celebration
             st.balloons()
         
         # Display response

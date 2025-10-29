@@ -256,7 +256,8 @@ class TravelGateway:
             _ensure_ok(req_data, "gather requirements")
 
             completion_status = req_data.get("completion_status", "incomplete")
-            is_complete = (completion_status == "complete")
+            is_mandatory_complete = (completion_status in ["mandatory_complete", "all_complete"])
+            is_all_complete = (completion_status == "all_complete")
 
             # Step 5: Output security validation
             validated_output = validate_output({
@@ -285,10 +286,16 @@ class TravelGateway:
 
             trust_score = 1.0
 
-            # NEW: Handle completion - Generate final JSON and call downstream agent
-            if is_complete:
+            # Handle completion - Generate final JSON and call downstream agent
+            final_json_s3_key = None
+            agent_response = None
+
+            if is_mandatory_complete:
                 print("\n" + "=" * 80)
-                print("🎉 REQUIREMENTS COLLECTION COMPLETE - FINALIZING")
+                if is_all_complete:
+                    print("🎉 ALL REQUIREMENTS COMPLETE - FINAL PLANNING")
+                else:
+                    print("✅ MANDATORY COMPLETE - CALLING PLANNING AGENT")
                 print("=" * 80)
 
                 final_json = self._build_final_json(
@@ -302,31 +309,23 @@ class TravelGateway:
                 print(json.dumps(final_json, indent=2, ensure_ascii=False))
                 print("\n" + "=" * 80 + "\n")
 
-                s3_key = _store_final_json_in_s3(session_id, final_json)
+                final_json_s3_key = _store_final_json_in_s3(session_id, final_json)
                 agent_response = await _call_planning_agent(final_json)
                 print(f"📬 Planning agent response: {agent_response.get('status')}")
 
-                return {
-                    "success": True,
-                    "response": response_text,
-                    "session_id": session_id,
-                    "intent": intent,
-                    "conversation_state": "requirements_complete",
-                    "trust_score": trust_score,
-                    "collection_complete": True,
-                    "final_json_s3_key": s3_key,
-                    "planning_agent_status": agent_response.get("status")
-                }
-
-            # Normal response (not complete yet)
+            # Build response
             return {
                 "success": True,
                 "response": response_text,
                 "session_id": session_id,
                 "intent": intent,
-                "conversation_state": self._get_conversation_state(intent, req_data.get("requirements_extracted", False)),
+                "conversation_state": self._get_conversation_state(intent, is_mandatory_complete),
                 "trust_score": trust_score,
-                "collection_complete": False
+                "collection_complete": is_all_complete,  # CHANGED: only true when ALL done
+                "completion_status": completion_status,  # NEW
+                "optional_progress": req_data.get("optional_progress", "0/6"),  # NEW
+                "final_json_s3_key": final_json_s3_key,
+                "planning_agent_status": agent_response.get("status") if agent_response else None
             }
 
         except HTTPException:

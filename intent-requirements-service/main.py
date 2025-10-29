@@ -369,24 +369,41 @@ class IntentRequirementsService:
                     updated_requirements = extracted_json
                 except json.JSONDecodeError as e:
                     print(f"{Fore.YELLOW}⚠️ JSON parsing failed, using existing requirements: {e}{Style.RESET_ALL}")
-            
-            # Check completion
-            requirements_extracted = self._check_completion(updated_requirements)
 
-            completion_status = "complete" if requirements_extracted else "incomplete"
+            # Extract interests BEFORE using it
             interests = _extract_interests(updated_requirements)
 
-            if requirements_extracted:
+            # Check completion status
+            completion_info = self._check_completion(updated_requirements)
+            mandatory_complete = completion_info["mandatory_complete"]
+            all_complete = completion_info["all_complete"]
+            optional_filled = completion_info["optional_filled"]
+
+            # Determine completion status
+            if all_complete:
+                completion_status = "all_complete"
                 new_phase = "complete"
-                response_text += "\n\nExcellent! I have all the information needed for your sustainable travel planning."
-                
-                # ✅ NEW: Print completion notice
+                response_text += "\n\n🎉 Perfect! All information collected. Your complete travel plan is ready!"
+            elif mandatory_complete:
+                completion_status = "mandatory_complete"
+                new_phase = "optional"
+                response_text += f"\n\n✅ Great! Core details captured. I can start planning, but feel free to share preferences (eco, dietary, interests, etc.) for a more personalized plan. ({optional_filled}/6 optional fields filled)"
+            else:
+                completion_status = "incomplete"
+                new_phase = session["phase"]
+            
+            # Print status
+            if mandatory_complete:
                 print(f"\n{Fore.GREEN}{'=' * 80}")
-                print(f"✅ REQUIREMENTS COLLECTION COMPLETE FOR SESSION: {session_id}")
+                if all_complete:
+                    print(f"🎉 ALL REQUIREMENTS COMPLETE FOR SESSION: {session_id}")
+                else:
+                    print(f"✅ MANDATORY REQUIREMENTS COMPLETE FOR SESSION: {session_id}")
+                    print(f"📊 Optional fields: {optional_filled}/6 filled")
                 print(f"🎯 Interests: {interests}")
                 print(f"{'=' * 80}{Style.RESET_ALL}\n")
             
-            # Persist updates (history + requirements + phase)
+            # Persist updates
             self._update_session(
                 session_id,
                 user_input,
@@ -398,10 +415,11 @@ class IntentRequirementsService:
             final_result = {
                 "response": response_text,
                 "intent": "planning",
-                "requirements_extracted": requirements_extracted,
+                "requirements_extracted": mandatory_complete,
                 "requirements_data": updated_requirements,
-                "completion_status": completion_status,  
-                "interests": interests                    
+                "completion_status": completion_status,
+                "interests": interests,
+                "optional_progress": f"{optional_filled}/6"  # NEW
             }
             return final_result
             
@@ -451,11 +469,14 @@ class IntentRequirementsService:
             "interests": []                    
         }
         
-    def _check_completion(self, requirements: Dict) -> bool:
+    def _check_completion(self, requirements: Dict) -> Dict[str, Any]:
+        """Check both mandatory and optional completion status"""
         reqs = requirements.get("requirements", {})
         trip_dates = reqs.get("trip_dates", {})
+        optional = reqs.get("optional", {})
         
-        required_fields = [
+        # Check mandatory fields
+        mandatory_fields = [
             reqs.get("destination_city"),
             trip_dates.get("start_date"),
             trip_dates.get("end_date"),
@@ -463,10 +484,37 @@ class IntentRequirementsService:
             reqs.get("budget_total_sgd"),
             reqs.get("pace")
         ]
+        mandatory_complete = all(field is not None and field != "" for field in mandatory_fields)
         
-        completion_status = all(field is not None and field != "" for field in required_fields)
-        return completion_status
-
+        # Check optional fields (excluding empty lists/nulls)
+        optional_fields = [
+            optional.get("eco_preferences"),
+            optional.get("dietary_preferences"),
+            optional.get("interests"),  # list
+            optional.get("accessibility_needs"),
+            optional.get("accommodation_location", {}).get("neighborhood"),
+            optional.get("group_type")
+        ]
+        
+        # Count filled optional fields (interests is list, others are strings/nulls)
+        optional_filled = sum([
+            1 if optional.get("eco_preferences") else 0,
+            1 if optional.get("dietary_preferences") else 0,
+            1 if optional.get("interests") and len(optional.get("interests", [])) > 0 else 0,
+            1 if optional.get("accessibility_needs") else 0,
+            1 if optional.get("accommodation_location", {}).get("neighborhood") else 0,
+            1 if optional.get("group_type") else 0
+        ])
+        
+        all_optional_complete = optional_filled == 6  # All 6 optional fields filled
+        
+        return {
+            "mandatory_complete": mandatory_complete,
+            "all_complete": mandatory_complete and all_optional_complete,
+            "optional_filled": optional_filled,
+            "optional_total": 6
+        }
+    
 # -------------------------------------------------
 # FastAPI wiring
 # -------------------------------------------------
