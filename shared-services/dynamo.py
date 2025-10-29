@@ -15,7 +15,7 @@ USE_DDB = os.getenv("USE_DDB", "false").lower() == "true"
 DDB_SESSIONS_TABLE = os.getenv("DDB_SESSIONS_TABLE", "travel_sessions")
 DDB_MEMORY_TABLE = os.getenv("DDB_MEMORY_TABLE", "travel_memory")  # not used here but kept for symmetry
 AWS_DDB_ENDPOINT = os.getenv("AWS_DDB_ENDPOINT")
-AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-2")
+AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 
 print(AWS_REGION)
 

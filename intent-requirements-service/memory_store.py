@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-2")
+AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 USE_S3 = os.getenv("USE_S3", "false").lower() == "true"
 
 # S3 settings

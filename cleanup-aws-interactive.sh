@@ -9,7 +9,7 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-REGION="ap-southeast-2"
+REGION="ap-southeast-1"
 
 # Helper function to ask yes/no
 ask_confirmation() {

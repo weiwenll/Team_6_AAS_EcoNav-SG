@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import boto3
 from botocore.exceptions import ClientError
 
-AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-2")
+AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
 # Optional “environment namespace”, e.g. "dev", "prod"

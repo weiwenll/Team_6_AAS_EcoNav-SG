@@ -23,13 +23,13 @@ export DOCKER_BUILDKIT=0
 export COMPOSE_DOCKER_CLI_BUILD=0
 
 STACK_NAME="${STACK_NAME:-travel-planner-stack}"
-REGION="${AWS_REGION:-ap-southeast-2}"
+REGION="${AWS_REGION:-ap-southeast-1}"
 OPENAI_KEY="${OPENAI_KEY:-}"
 OWNER="${STACK_OWNER:-$(whoami)}"
 AWS_PROFILE="${AWS_PROFILE:-default}"
 
 # Generate unique bucket name with timestamp
-BUCKET_NAME="stp-state-${OWNER}-prod"  # Static bucket name
+BUCKET_NAME="stp-req-${OWNER}-prod"  # Static bucket name
 
 echo -e "${GREEN}Configuration:${NC}"
 echo -e "  Stack Name:    ${YELLOW}$STACK_NAME${NC}"
