@@ -243,7 +243,13 @@ class IntentRequirementsService:
             )
             
             # Use kickoff() with proper error handling
-            crew = Crew(agents=[self.intent_agent], tasks=[task], verbose=False, process_timeout=12)
+            crew = Crew(
+                agents=[self.intent_agent], 
+                tasks=[task], 
+                verbose=False, 
+                memory=False,  # ← ADD THIS
+                process_timeout=12
+            )
             result = str(await self._run_crew(crew, timeout=15)).lower().strip()
 
             
@@ -292,7 +298,13 @@ class IntentRequirementsService:
                 expected_output=task_config.get('expected_output', 'Greeting with planning question')
             )
             
-            crew = Crew(agents=[self.requirements_agent], tasks=[task], verbose=False, process_timeout=18)
+            crew = Crew(
+                agents=[self.requirements_agent], 
+                tasks=[task], 
+                verbose=False,
+                memory=False,  # ← ADD THIS
+                process_timeout=18
+            )
             response = str(await self._run_crew(crew, timeout=20))
             
             # Move/keep phase as "initial"
@@ -352,7 +364,13 @@ class IntentRequirementsService:
                 expected_output=task_config.get('expected_output', 'Requirements extraction')
             )
             
-            crew = Crew(agents=[self.requirements_agent], tasks=[task], verbose=False, process_timeout=32)
+            crew = Crew(
+                agents=[self.requirements_agent], 
+                tasks=[task], 
+                verbose=False,
+                memory=False,  # ← ADD THIS
+                process_timeout=32
+            )
             result = str(await self._run_crew(crew, timeout=35))
             
             # Parse result using advanced regex

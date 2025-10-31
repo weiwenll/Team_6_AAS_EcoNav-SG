@@ -1,11 +1,9 @@
 FROM public.ecr.aws/lambda/python:3.11
 
-# Copy ALL requirement files (using openai layer now)
 COPY layers/openai/requirements.txt /tmp/openai-requirements.txt
 COPY layers/common/requirements.txt /tmp/common-requirements.txt
 COPY shared-services/requirements-lambda.txt /tmp/requirements.txt
 
-# Install dependencies in order with retries and better error handling
 RUN pip install --upgrade pip setuptools wheel && \
     echo "Installing common dependencies..." && \
     pip install --no-cache-dir --prefer-binary --retries 3 -r /tmp/common-requirements.txt && \
@@ -14,17 +12,14 @@ RUN pip install --upgrade pip setuptools wheel && \
     echo "Installing service-specific dependencies..." && \
     pip install --no-cache-dir --prefer-binary --retries 3 -r /tmp/requirements.txt
 
-# CRITICAL: Verify imports work before deploying
 RUN echo "Verifying critical imports..." && \
     python -c "from openai import AsyncOpenAI; print('✅ openai imported')" && \
     python -c "import fastapi; print('✅ fastapi imported')" && \
     python -c "import boto3; print('✅ boto3 imported')" && \
     echo "✅ All critical imports successful"
 
-# Copy application code (NO MORE guardrails_config directory needed)
 COPY shared-services/ ${LAMBDA_TASK_ROOT}/
 
-# Set working directory
 WORKDIR ${LAMBDA_TASK_ROOT}
 
 CMD [ "main.lambda_handler" ]

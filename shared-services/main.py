@@ -19,21 +19,12 @@ from transparency import TransparencyEngine
 
 # -------- Select backend at runtime --------
 USE_S3 = os.getenv("USE_S3")
-if USE_S3:
-    from s3_store import (
-        get_session as store_get,
-        put_session as store_put,
-        update_session as store_update,
-        delete_session as store_delete,
-    )
-else:
-    # Fallback to existing DDB helper
-    from dynamo import (
-        get_session as store_get,
-        put_session as store_put,
-        update_session as store_update,
-        delete_session as store_delete,
-    )
+from s3_store import (
+    get_session as store_get,
+    put_session as store_put,
+    update_session as store_update,
+    delete_session as store_delete,
+)
 
 # ---------------------------
 # Pydantic models
