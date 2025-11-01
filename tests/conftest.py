@@ -64,14 +64,25 @@ def sample_requirements():
                 "dietary_preferences": "vegetarian",
                 "interests": ["gardens", "museums"],
                 "uninterests": [],
-                "accessibility_needs": None,
+                "accessibility_needs": "no_preference",  # ← CHANGED from None
                 "accommodation_location": {
-                    "neighborhood": None
+                    "neighborhood": "Marina Bay"  # ← CHANGED from None
                 },
                 "group_type": "family"
             }
         }
     }
+
+@pytest.fixture(autouse=True)
+def clear_memory_between_tests():
+    """Clear in-memory session storage between tests"""
+    yield
+    # After each test, clear the in-memory store
+    try:
+        from intent_requirements_service.memory_store import _MEMORY_CACHE
+        _MEMORY_CACHE.clear()
+    except:
+        pass  # If memory_store doesn't exist or has different structure
 
 @pytest.fixture
 def incomplete_requirements():

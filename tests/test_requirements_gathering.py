@@ -80,6 +80,11 @@ class TestRequirementsGathering:
         
         service = IntentRequirementsService()
         
+        # CLEAR SESSION FIRST to avoid contamination from previous tests
+        from main import put_memory
+        import copy
+        put_memory(sample_session_id, [], copy.deepcopy(service.target_json_template), "initial")
+        
         mock_result = """
         EXTRACTED_JSON: {
             "requirements": {

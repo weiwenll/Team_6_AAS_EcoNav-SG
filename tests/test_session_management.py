@@ -279,6 +279,8 @@ class TestMemoryStore:
     
     def test_get_memory(self, sample_session_id, sample_requirements):
         """Test retrieving memory from store"""
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'intent-requirements-service'))
         from memory_store import get_memory
         
         mock_data = {

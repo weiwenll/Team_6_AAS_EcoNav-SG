@@ -536,83 +536,76 @@ class IntentRequirementsService:
             "completion_status": "incomplete",  
             "interests": []                    
         }
+
+    def _check_completion(self, requirements: Dict) -> Dict:
+        """Check if requirements are complete"""
+        req = requirements.get("requirements", {})
         
-    def _check_completion(self, requirements_data: Dict) -> Dict:
-        """
-        Check if requirements collection is complete.
-        Returns status: incomplete, mandatory_complete, or all_complete
-        """
-        reqs = requirements_data.get("requirements", {})
-        
-        # ========== CHECK MANDATORY FIELDS ==========
-        mandatory_fields = {
-            "destination_city": reqs.get("destination_city"),
-            "start_date": reqs.get("trip_dates", {}).get("start_date"),
-            "end_date": reqs.get("trip_dates", {}).get("end_date"),
-            "duration_days": reqs.get("duration_days"),
-            "adults": reqs.get("travelers", {}).get("adults"),
-            "budget_total_sgd": reqs.get("budget_total_sgd"),
-            "pace": reqs.get("pace")
-        }
-        
-        # Check if mandatory field is truly filled (not None, not empty string, not 0)
+        # Helper function to check if value is actually filled
         def is_filled(value):
-            if value is None:
-                return False
-            if isinstance(value, str) and value.strip() == "":
-                return False
-            if isinstance(value, (int, float)) and value == 0:
-                return False  # 0 budget or 0 adults is not valid
-            return True
-        
-        mandatory_filled = sum(1 for v in mandatory_fields.values() if is_filled(v))
-        mandatory_total = len(mandatory_fields)
-        mandatory_complete = (mandatory_filled == mandatory_total)
-        
-        # ========== CHECK OPTIONAL FIELDS ==========
-        optional = reqs.get("optional", {})
-        
-        optional_fields = {
-            "eco_preferences": optional.get("eco_preferences"),
-            "dietary_preferences": optional.get("dietary_preferences"),
-            "interests": optional.get("interests", []),
-            "accessibility_needs": optional.get("accessibility_needs"),
-            "neighborhood": optional.get("accommodation_location", {}).get("neighborhood"),
-            "group_type": optional.get("group_type")
-        }
-        
-        # Check optional fields - special handling for lists and specific values
-        def is_optional_filled(key, value):
-            if key == "interests":
-                return isinstance(value, list) and len(value) > 0
+            """Check if a value is meaningfully filled (not None, not null string, not empty)"""
             if value is None:
                 return False
             if isinstance(value, str):
-                # "no_preference" or "none" counts as filled
-                return value.strip() != ""
-            return True
+                return value.strip() != "" and value.lower() != "null"
+            if isinstance(value, (int, float)):
+                return True
+            if isinstance(value, list):
+                return len(value) > 0
+            return bool(value)
         
-        optional_filled = sum(1 for k, v in optional_fields.items() if is_optional_filled(k, v))
-        optional_total = len(optional_fields)
-        all_complete = mandatory_complete and (optional_filled == optional_total)
+        # Check mandatory fields - ALL must be filled with actual values
+        mandatory_fields_filled = [
+            is_filled(req.get("destination_city")),
+            is_filled(req.get("trip_dates", {}).get("start_date")),
+            is_filled(req.get("trip_dates", {}).get("end_date")),
+            is_filled(req.get("duration_days")),
+            is_filled(req.get("travelers", {}).get("adults")),
+            is_filled(req.get("budget_total_sgd")),
+            is_filled(req.get("pace"))
+        ]
         
-        # ========== DETERMINE STATUS ==========
-        if all_complete:
-            status = "all_complete"
-        elif mandatory_complete:
-            status = "mandatory_complete"
-        else:
-            status = "incomplete"
+        mandatory_complete = all(mandatory_fields_filled)
+        
+        # Check optional fields
+        optional = req.get("optional", {})
+        
+        # Count filled optional fields (6 total possible)
+        optional_filled = 0
+        
+        # 1. eco_preferences
+        if is_filled(optional.get("eco_preferences")):
+            optional_filled += 1
+        
+        # 2. dietary_preferences
+        if is_filled(optional.get("dietary_preferences")):
+            optional_filled += 1
+        
+        # 3. accessibility_needs
+        if is_filled(optional.get("accessibility_needs")):
+            optional_filled += 1
+        
+        # 4. group_type
+        if is_filled(optional.get("group_type")):
+            optional_filled += 1
+        
+        # 5. accommodation_location.neighborhood
+        if is_filled(optional.get("accommodation_location", {}).get("neighborhood")):
+            optional_filled += 1
+        
+        # 6. interests (check if array has items)
+        interests = optional.get("interests", [])
+        if interests and len(interests) > 0:
+            optional_filled += 1
+        
+        # All complete = mandatory complete AND all 6 optional fields filled
+        all_complete = mandatory_complete and optional_filled >= 6
         
         return {
-            "status": status,
             "mandatory_complete": mandatory_complete,
-            "mandatory_filled": mandatory_filled,
-            "mandatory_total": mandatory_total,
             "optional_filled": optional_filled,
-            "optional_total": optional_total,
             "all_complete": all_complete,
-            "optional_progress": f"{optional_filled}/{optional_total}"
+            "interests": interests if interests else []
         }
     
 # -------------------------------------------------
@@ -626,13 +619,17 @@ async def health_check():
     return {"status": "healthy", "service": "enhanced-travel-requirements"}
 
 @app.post("/classify-intent", response_model=IntentResponse)
-async def classify_intent(request: IntentRequest):
+async def classify_intent_endpoint(request: IntentRequest):
+    """Classify user intent"""
     try:
-        if not request.user_input.strip():
-            raise HTTPException(status_code=400, detail="User input cannot be empty")
+        # Validate input
+        if not request.user_input or not request.user_input.strip():
+            raise HTTPException(status_code=400, detail="user_input cannot be empty")
         
         intent = await service.classify_intent(request.user_input)
         return IntentResponse(intent=intent)
+    except HTTPException:
+        raise  # Re-raise validation errors
     except Exception as e:
         print(f"{Fore.RED}❌ INTENT CLASSIFICATION ERROR: {str(e)}{Style.RESET_ALL}")
         raise HTTPException(status_code=500, detail=f"Intent classification failed: {str(e)}")
@@ -670,7 +667,7 @@ async def root():
     return {
         "message": "Enhanced Travel Requirements Service",
         "version": "2.0.0",
-        "intents": ["greeting", "planning"],
+        "intents": ["greeting", "planning", "other"],
         "features": [
             "Binary Intent Classification",
             "Intelligent Requirements Collection",
