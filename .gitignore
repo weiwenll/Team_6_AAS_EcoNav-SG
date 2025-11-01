@@ -11,3 +11,6 @@ common/__pycache__
 layers/
 .aws-sam/
 env.local.json
+htmlcov
+.coverage
+.pytest_cache
