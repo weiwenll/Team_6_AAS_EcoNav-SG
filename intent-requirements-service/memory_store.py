@@ -41,77 +41,22 @@ def _now_iso() -> str:
     return datetime.now().isoformat()
 
 def get_memory(session_id: str, target_template: dict = None) -> Dict[str, Any]:
-    if not USE_S3:
-        return _memory_store.get(session_id, {
-            "session_id": session_id,
-            "conversation_history": [],
-            "requirements": target_template or {},
-            "phase": "initial",
-            "last_updated": _now_iso()
-        })
-
-    key = _memory_key(session_id)
-    try:
-        obj = _s3.get_object(Bucket=S3_BUCKET_NAME, Key=key)
-        body = obj["Body"].read().decode("utf-8")
-        return json.loads(body)
-    except _s3.exceptions.NoSuchKey:
-        # Return default if not found
-        return {
-            "session_id": session_id,
-            "conversation_history": [],
-            "requirements": target_template or {},
-            "phase": "initial",
-            "last_updated": _now_iso()
-        }
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code")
-        if code in ("NoSuchKey", "404"):
-            return {
-                "session_id": session_id,
-                "conversation_history": [],
-                "requirements": target_template or {},
-                "phase": "initial",
-                "last_updated": _now_iso()
-            }
-        print(f"S3 get_memory error: {e}")
-        return {
-            "session_id": session_id,
-            "conversation_history": [],
-            "requirements": target_template or {},
-            "phase": "initial",
-            "last_updated": _now_iso()
-        }
+    """Get memory data from in-memory storage only (no S3 read)"""
+    return _memory_store.get(session_id, {
+        "session_id": session_id,
+        "conversation_history": [],
+        "requirements": target_template or {},
+        "phase": "initial",
+        "last_updated": _now_iso()
+    })
 
 def put_memory(session_id: str, conversation_history: list, requirements: dict, phase: str):
-    if not USE_S3:
-        print(f"📝 Local storage mode - skipping S3 for session {session_id}")
-        _memory_store[session_id] = {  # Store in memory instead
-            "session_id": session_id,
-            "conversation_history": conversation_history[-int(os.getenv("MAX_HISTORY", "10")):],
-            "requirements": requirements,
-            "phase": phase,
-            "last_updated": _now_iso()
-        }
-        return
-    
-    item = {
+    """Store memory data ONLY in-memory (no S3 upload)"""
+    print(f"📝 Storing session {session_id} in memory only (S3 disabled for requirements)")
+    _memory_store[session_id] = {
         "session_id": session_id,
         "conversation_history": conversation_history[-int(os.getenv("MAX_HISTORY", "10")):],
         "requirements": requirements,
         "phase": phase,
         "last_updated": _now_iso()
     }
-    
-    if not S3_BUCKET_NAME:
-        raise RuntimeError("S3_BUCKET_NAME is not set")
-    
-    key = _memory_key(session_id)
-    body = json.dumps(item, ensure_ascii=False).encode("utf-8")
-    _s3.put_object(
-        Bucket=S3_BUCKET_NAME,
-        Key=key,
-        Body=body,
-        ContentType="application/json",
-        ServerSideEncryption="AES256"
-    )

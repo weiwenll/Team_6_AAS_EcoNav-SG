@@ -423,28 +423,6 @@ class IntentRequirementsService:
             all_complete = completion_info["all_complete"]
             optional_filled = completion_info["optional_filled"]
 
-            if all_complete or mandatory_complete:
-                # Remove common question patterns if completion is detected
-                question_patterns = [
-                    r"could you (?:please )?(?:share|tell|provide|let me know)[^?]*\?",
-                    r"(?:what|which|how much|how many)[^?]*\?",
-                    r"please (?:share|tell|provide)[^?]*\?",
-                    r"now,?\s+(?:could|can|would)[^?]*\?",
-                ]
-                
-                original_response = response_text
-                for pattern in question_patterns:
-                    # Only remove if we're complete
-                    if all_complete:
-                        response_text = re.sub(pattern, "", response_text, flags=re.IGNORECASE)
-                
-                # Clean up any resulting formatting issues
-                response_text = re.sub(r'\s+', ' ', response_text).strip()
-                response_text = re.sub(r'\.\s*\)', '.', response_text)
-                
-                if response_text != original_response:
-                    print(f"{Fore.YELLOW}⚠️ Removed question from response due to completion status{Style.RESET_ALL}")
-
             # Determine completion status
             if all_complete:
                 completion_status = "all_complete"
@@ -453,12 +431,10 @@ class IntentRequirementsService:
             elif mandatory_complete:
                 completion_status = "mandatory_complete"
                 new_phase = "optional"
-                response_text += f"\n\n✅ Great! Core details captured. I can start planning, but feel free to share preferences (eco, dietary, interests, etc.) for a more personalized plan. ({optional_filled}/6 optional fields filled)"
             else:
                 completion_status = "incomplete"
                 new_phase = session["phase"]
             
-            # Print status
             if mandatory_complete:
                 print(f"\n{Fore.GREEN}{'=' * 80}")
                 if all_complete:
@@ -468,6 +444,7 @@ class IntentRequirementsService:
                     print(f"📊 Optional fields: {optional_filled}/6 filled")
                 print(f"🎯 Interests: {interests}")
                 print(f"{'=' * 80}{Style.RESET_ALL}\n")
+
             
             # Persist updates
             self._update_session(

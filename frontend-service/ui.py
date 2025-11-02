@@ -7,8 +7,8 @@ from typing import Dict, Any, Optional
 import time
 
 # Configuration
-API_GATEWAY_URL = "http://localhost:8000"
-# API_GATEWAY_URL = "https://b7uwrk19nf.execute-api.ap-southeast-1.amazonaws.com"
+# API_GATEWAY_URL = "http://localhost:8000"
+API_GATEWAY_URL = "https://b7uwrk19nf.execute-api.ap-southeast-1.amazonaws.com"
 
 class TravelGatewayClient:
     """Simplified client for travel gateway API"""
@@ -95,9 +95,9 @@ def display_sidebar():
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric("Messages", len(st.session_state.messages) // 2)
-                with col2:
-                    trust_score = info.get("trust_score", 1.0)
-                    st.metric("Trust Score", f"{trust_score:.2f}")
+                # with col2:
+                #     trust_score = info.get("trust_score", 1.0)
+                #     st.metric("Trust Score", f"{trust_score:.2f}")
                 
                 # Conversation state
                 state = info.get("conversation_state", "unknown")
@@ -177,8 +177,8 @@ def display_chat_interface():
                 meta_parts = []
                 if metadata.get("intent"):
                     meta_parts.append(f"Intent: {metadata['intent']}")
-                if metadata.get("trust_score"):
-                    meta_parts.append(f"Trust: {metadata['trust_score']:.2f}")
+                # if metadata.get("trust_score"):
+                #     meta_parts.append(f"Trust: {metadata['trust_score']:.2f}")
                 
                 if meta_parts:
                     st.caption(" | ".join(meta_parts))

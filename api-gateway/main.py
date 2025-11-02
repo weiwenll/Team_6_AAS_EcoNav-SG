@@ -100,6 +100,33 @@ def _get_session_from_s3(session_id: str) -> Optional[Dict[str, Any]]:
         print(f"⚠️ Could not retrieve session from S3: {e}")
         return None
 
+def _store_for_call_in_s3(session_id: str, final_json: Dict[str, Any], s3_key: str) -> str:
+    """Store forCall message in S3 with correct format"""
+    try:
+        s3 = _get_s3_client()
+        
+        # Create forCall format
+        for_call_data = {
+            "bucket_name": S3_BUCKET_NAME,
+            "key": s3_key,  # This is the /prod/final/session_id.json key
+            "sender_agent": "Intent_Requirements_Agent",
+            "session": session_id
+        }
+        
+        key = f"{S3_BASE_PREFIX}/forCall/{session_id}.json" if S3_BASE_PREFIX else f"forCall/{session_id}.json"
+        s3.put_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=key,
+            Body=json.dumps(for_call_data, ensure_ascii=False, indent=2).encode("utf-8"),
+            ContentType="application/json",
+            ServerSideEncryption="AES256"
+        )
+        print(f"✅ ForCall JSON stored in S3: s3://{S3_BUCKET_NAME}/{key}")
+        return key
+    except Exception as e:
+        print(f"❌ Error storing forCall JSON in S3: {e}")
+        raise
+
 # ---------------------------------------------------------------------------
 # Downstream Agent Integration
 # ---------------------------------------------------------------------------
@@ -134,7 +161,7 @@ class TravelPlanningRequest(BaseModel):
 class TravelPlanningResponse(BaseModel):
     success: bool
     response: str
-    session_id: str
+    session_id: Optional[str] = None  
     intent: str
     conversation_state: str
     trust_score: float
@@ -191,21 +218,23 @@ class TravelGateway:
         try:
             session_data = _get_session_from_s3(session_id)
 
-            user_messages = []
+            # CHANGE THIS: Capture full conversation with roles
+            conversation_messages = []
             if session_data and "conversation_history" in session_data:
-                user_messages = [
-                    msg.get("message", "") 
-                    for msg in session_data["conversation_history"] 
-                    if msg.get("role") == "user"
+                conversation_messages = [
+                    {
+                        "role": msg.get("role"),
+                        "message": msg.get("message", "")
+                    }
+                    for msg in session_data["conversation_history"]
                 ]
-            concatenated_message = "\n".join(user_messages) if user_messages else ""
-
+            
             reqs = requirements_data.get("requirements", {})
             
             final_json = {
                 "status_code": status_code,
                 "interest": interests,
-                "message": concatenated_message,
+                "message": conversation_messages,  # CHANGED: Now array of {role, message}
                 "json_filename": f"sessions/{session_id}.json",
                 "session_id": session_id,
                 "timestamp": datetime.now().isoformat(),
@@ -221,13 +250,13 @@ class TravelGateway:
             return {
                 "status_code": 500,
                 "interest": [],
-                "message": "Error processing requirements",
+                "message": [],  # CHANGED: Empty array instead of string
                 "json_filename": f"sessions/{session_id}.json",
                 "session_id": session_id,
                 "timestamp": datetime.now().isoformat(),
                 "error": str(e)
             }
-
+        
     async def process_input(self, user_input: str, session_id: str = None) -> Dict[str, Any]:
         """Main orchestration pipeline."""
 
@@ -328,6 +357,7 @@ class TravelGateway:
                 print("\n" + "=" * 80 + "\n")
 
                 final_json_s3_key = _store_final_json_in_s3(session_id, final_json)
+                for_call_key = _store_for_call_in_s3(session_id, final_json, final_json_s3_key)
                 agent_response = await _call_planning_agent(final_json)
                 print(f"📬 Planning agent response: {agent_response.get('status')}")
 

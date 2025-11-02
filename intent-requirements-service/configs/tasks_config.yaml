@@ -206,6 +206,21 @@ comprehensive_requirements_collection:
       * "Family of 4 with 2 kids" → adults: 2, children: 2
       * "Me, my wife, and our 3 children" → adults: 2, children: 3
       * "Group of 6 friends" → adults: 6, children: 0
+
+    INTERESTS AND UNINTERESTS EXTRACTION:
+    - Extract interests or uninterests AS THE USER STATED THEM
+    - DO NOT abbreviate or simplify interest or uninterest names
+    - Keep full place names and specific attractions intact
+    - Only separate when user clearly lists multiple distinct interests or uninterests
+    - Examples for INTERESTS:
+      * User says "Gardens by the Bay" → interests: ["gardens by the bay"]
+      * User says "Marina Bay Sands" → interests: ["marina bay sands"]
+      * User says "museums and art galleries" → interests: ["museums", "art galleries"]
+      * User says "I like nature and Gardens by the Bay" → interests: ["nature", "gardens by the bay"]
+    - Examples for UNINTERESTS:
+      * User says "I want to avoid Little India" → uninterests: ["little india"]
+      * User says "I don't want crowded markets" → uninterests: ["crowded markets"]
+      * User says "avoid Sentosa and Orchard Road" → uninterests: ["sentosa", "orchard road"]
     
     ADVANCED REASONING TASKS:
     
