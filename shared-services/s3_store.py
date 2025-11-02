@@ -36,8 +36,11 @@ def _effective_prefix(service_prefix: str) -> str:
     Compose S3_BASE_PREFIX (e.g., 'dev') with the service prefix (e.g., 'sessions/'),
     producing 'dev/sessions/' if base is set, otherwise just 'sessions/'.
     """
-    # keep service_prefix’s structure but normalize
-    service_prefix = service_prefix.strip()
+    # Handle None or empty service_prefix
+    if not service_prefix:
+        service_prefix = ""
+    else:
+        service_prefix = service_prefix.strip()
     return _join_prefix(S3_BASE_PREFIX, service_prefix)
 
 

@@ -337,12 +337,9 @@ class TravelGateway:
             final_json_s3_key = None
             agent_response = None
 
-            if is_mandatory_complete:
+            if is_all_complete: 
                 print("\n" + "=" * 80)
-                if is_all_complete:
-                    print("🎉 ALL REQUIREMENTS COMPLETE - FINAL PLANNING")
-                else:
-                    print("✅ MANDATORY COMPLETE - CALLING PLANNING AGENT")
+                print("🎉 ALL REQUIREMENTS COMPLETE - FINAL PLANNING")
                 print("=" * 80)
 
                 final_json = self._build_final_json(
@@ -360,6 +357,10 @@ class TravelGateway:
                 for_call_key = _store_for_call_in_s3(session_id, final_json, final_json_s3_key)
                 agent_response = await _call_planning_agent(final_json)
                 print(f"📬 Planning agent response: {agent_response.get('status')}")
+            elif is_mandatory_complete:  # ← ADDED: Just log when mandatory is complete
+                print("\n" + "=" * 80)
+                print("✅ MANDATORY COMPLETE - COLLECTING OPTIONAL FIELDS")
+                print("=" * 80 + "\n")
 
             # Build response
             return {

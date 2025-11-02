@@ -89,6 +89,7 @@ Resources:
           S3_BUCKET_NAME: !Ref StateBucketName
           S3_BASE_PREFIX: !Ref StateBasePrefix
           AWS_S3_ENDPOINT: !Ref AwsS3Endpoint
+          S3_SESSIONS_PREFIX: "sessions" 
           USE_S3: "true"
           GUARDRAILS_ENABLED: "true"
           GUARDRAILS_TIMEOUT: "10"
@@ -148,7 +149,7 @@ Resources:
           AWS_S3_ENDPOINT: !Ref AwsS3Endpoint
           USE_S3: "true"
           CREWAI_TELEMETRY_DISABLED: "1"
-          MAX_TOKENS: "300"
+          MAX_TOKENS: "700"
       Events:
         IntentRoutes:
           Type: HttpApi

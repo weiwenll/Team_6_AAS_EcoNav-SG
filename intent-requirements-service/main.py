@@ -423,6 +423,28 @@ class IntentRequirementsService:
             all_complete = completion_info["all_complete"]
             optional_filled = completion_info["optional_filled"]
 
+            if all_complete or mandatory_complete:
+                # Remove common question patterns if completion is detected
+                question_patterns = [
+                    r"could you (?:please )?(?:share|tell|provide|let me know)[^?]*\?",
+                    r"(?:what|which|how much|how many)[^?]*\?",
+                    r"please (?:share|tell|provide)[^?]*\?",
+                    r"now,?\s+(?:could|can|would)[^?]*\?",
+                ]
+                
+                original_response = response_text
+                for pattern in question_patterns:
+                    # Only remove if we're complete
+                    if all_complete:
+                        response_text = re.sub(pattern, "", response_text, flags=re.IGNORECASE)
+                
+                # Clean up any resulting formatting issues
+                response_text = re.sub(r'\s+', ' ', response_text).strip()
+                response_text = re.sub(r'\.\s*\)', '.', response_text)
+                
+                if response_text != original_response:
+                    print(f"{Fore.YELLOW}⚠️ Removed question from response due to completion status{Style.RESET_ALL}")
+
             # Determine completion status
             if all_complete:
                 completion_status = "all_complete"
