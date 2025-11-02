@@ -337,9 +337,16 @@ class TravelGateway:
             final_json_s3_key = None
             agent_response = None
 
-            if is_all_complete: 
+            # Get session to check if already uploaded
+            session = get_session(session_id)
+            already_uploaded = session.get("data", {}).get("initial_json_uploaded", False) if session else False
+
+            if is_mandatory_complete:
                 print("\n" + "=" * 80)
-                print("🎉 ALL REQUIREMENTS COMPLETE - FINAL PLANNING")
+                if is_all_complete:
+                    print("🎉 ALL REQUIREMENTS COMPLETE - FINAL PLANNING")
+                else:
+                    print("✅ MANDATORY COMPLETE - COLLECTING OPTIONAL FIELDS")
                 print("=" * 80)
 
                 final_json = self._build_final_json(
@@ -353,14 +360,19 @@ class TravelGateway:
                 print(json.dumps(final_json, indent=2, ensure_ascii=False))
                 print("\n" + "=" * 80 + "\n")
 
+                # Store/update JSON in S3
                 final_json_s3_key = _store_final_json_in_s3(session_id, final_json)
                 for_call_key = _store_for_call_in_s3(session_id, final_json, final_json_s3_key)
-                agent_response = await _call_planning_agent(final_json)
-                print(f"📬 Planning agent response: {agent_response.get('status')}")
-            elif is_mandatory_complete:  # ← ADDED: Just log when mandatory is complete
-                print("\n" + "=" * 80)
-                print("✅ MANDATORY COMPLETE - COLLECTING OPTIONAL FIELDS")
-                print("=" * 80 + "\n")
+                
+                # Only call planning agent when ALL complete
+                if is_all_complete:
+                    agent_response = await _call_planning_agent(final_json)
+                    print(f"📬 Planning agent response: {agent_response.get('status')}")
+                
+                # Mark as uploaded (first time only)
+                if not already_uploaded:
+                    update_session(session_id, {"initial_json_uploaded": True})
+                    print("✅ Marked initial JSON as uploaded")
 
             # Build response
             return {
