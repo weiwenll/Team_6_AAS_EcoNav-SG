@@ -248,6 +248,14 @@ else
     echo "  aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query 'Stacks[0].Outputs'"
 fi
 
+echo ""
+echo -e "${BLUE}🔥 Warming up Lambda functions...${NC}"
+for i in 1 2 3; do
+    curl -s "$API_URL/health" > /dev/null && echo -e "${GREEN}Warmup attempt $i/3 complete${NC}" || true
+    sleep 2
+done
+echo ""
+
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║  Deployment script completed successfully                 ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"

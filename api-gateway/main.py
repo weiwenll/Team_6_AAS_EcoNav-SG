@@ -362,7 +362,7 @@ class TravelGateway:
 
                 # Store/update JSON in S3
                 final_json_s3_key = _store_final_json_in_s3(session_id, final_json)
-                for_call_key = _store_for_call_in_s3(session_id, final_json, final_json_s3_key)
+                # for_call_key = _store_for_call_in_s3(session_id, final_json, final_json_s3_key)
                 
                 # Only call planning agent when ALL complete
                 if is_all_complete:
@@ -480,6 +480,30 @@ async def root():
             "Downstream Agent Integration"
         ],
         "routes": ["/travel/plan", "/travel/session/{session_id}", "/health"],
+    }
+
+@app.get("/health")
+async def health():
+    """Health check endpoint - warms up downstream services"""
+    downstream_status = {}
+    
+    # Warm up intent service
+    try:
+        result = classify_intent({"user_input": "warmup", "session_id": "warmup"})
+        downstream_status["intent_service"] = "ok" if result.get("success") else "degraded"
+    except Exception as e:
+        downstream_status["intent_service"] = "error"
+    
+    # Warm up shared service
+    try:
+        result = create_session({"session_id": "warmup"})
+        downstream_status["shared_service"] = "ok" if result.get("success") else "degraded"
+    except Exception as e:
+        downstream_status["shared_service"] = "error"
+    
+    return {
+        "status": "ok",
+        "downstream": downstream_status
     }
 
 # ---------------------------------------------------------------------------
