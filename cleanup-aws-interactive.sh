@@ -77,42 +77,42 @@ echo -e "${CYAN}Scanning for CloudFormation stacks...${NC}"
 STACKS=$(aws cloudformation list-stacks \
     --region "$REGION" \
     --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE UPDATE_ROLLBACK_COMPLETE \
-    --query 'StackSummaries[?contains(StackName, `travel-planner`)].{Name:StackName, Status:StackStatus, Created:CreationTime}' \
+    --query 'StackSummaries[?contains(StackName, `intent-agent`)].{Name:StackName, Status:StackStatus, Created:CreationTime}' \
     --output json 2>/dev/null)
 STACK_COUNT=$(echo "$STACKS" | jq -r '. | length')
 
 echo -e "${CYAN}Scanning for S3 buckets...${NC}"
 BUCKETS=$(aws s3api list-buckets \
     --region "$REGION" \
-    --query 'Buckets[?contains(Name, `stp-req`)].{Name:Name, Created:CreationDate}' \
+    --query 'Buckets[?contains(Name, `iss-travel-planner`)].{Name:Name, Created:CreationDate}' \
     --output json 2>/dev/null)
 BUCKET_COUNT=$(echo "$BUCKETS" | jq -r '. | length')
 
 echo -e "${CYAN}Scanning for Lambda functions...${NC}"
 FUNCTIONS=$(aws lambda list-functions \
     --region "$REGION" \
-    --query 'Functions[?contains(FunctionName, `travel-planner`) || contains(FunctionName, `stp-`) || contains(FunctionName, `shared-services`) || contains(FunctionName, `intent-requirements`)].{Name:FunctionName, Runtime:Runtime, Memory:MemorySize}' \
+    --query 'Functions[?contains(FunctionName, `stp-api-gateway-prod`) || contains(FunctionName, `shared-functions-prod`) || contains(FunctionName, `intent-requirements-prod`)].{Name:FunctionName, Runtime:Runtime, Memory:MemorySize}' \
     --output json 2>/dev/null)
 FUNCTION_COUNT=$(echo "$FUNCTIONS" | jq -r '. | length')
 
 echo -e "${CYAN}Scanning for API Gateways...${NC}"
 APIS=$(aws apigatewayv2 get-apis \
     --region "$REGION" \
-    --query 'Items[?contains(Name, `travel`)].{Name:Name, ApiId:ApiId, Protocol:ProtocolType}' \
+    --query 'Items[?contains(Name, `intent-agent`)].{Name:Name, ApiId:ApiId, Protocol:ProtocolType}' \
     --output json 2>/dev/null)
 API_COUNT=$(echo "$APIS" | jq -r '. | length')
 
 echo -e "${CYAN}Scanning for ECR repositories...${NC}"
 ECR_REPOS=$(aws ecr describe-repositories \
     --region "$REGION" \
-    --query 'repositories[?contains(repositoryName, `travelplannerstack`)].{Name:repositoryName, URI:repositoryUri, Created:createdAt}' \
+    --query 'repositories[?contains(repositoryName, `intentagentstackprod`)].{Name:repositoryName, URI:repositoryUri, Created:createdAt}' \
     --output json 2>/dev/null)
 ECR_COUNT=$(echo "$ECR_REPOS" | jq -r '. | length')
 
 echo -e "${CYAN}Scanning for CloudWatch Log Groups...${NC}"
 LOG_GROUPS=$(aws logs describe-log-groups \
     --region "$REGION" \
-    --query 'logGroups[?contains(logGroupName, `travel-planner-stack`)].{Name:logGroupName, Size:storedBytes, Created:creationTime}' \
+    --query 'logGroups[?contains(logGroupName, `/aws/lambda/stp-api-gateway-prod`) || contains(logGroupName, `/aws/lambda/shared-functions-prod`) || contains(logGroupName, `/aws/lambda/intent-requirements-prod`)].{Name:logGroupName, Size:storedBytes, Created:creationTime}' \
     --output json 2>/dev/null)
 LOG_GROUP_COUNT=$(echo "$LOG_GROUPS" | jq -r '. | length')
 
@@ -383,7 +383,7 @@ if [ "$FUNCTION_COUNT" -gt 0 ]; then
     # Re-scan for functions (some may have been deleted with the stack)
     REMAINING_FUNCTIONS=$(aws lambda list-functions \
         --region "$REGION" \
-        --query 'Functions[?contains(FunctionName, `travel-planner`) || contains(FunctionName, `stp-`) || contains(FunctionName, `shared-services`) || contains(FunctionName, `intent-requirements`)].FunctionName' \
+        --query 'Functions[?contains(FunctionName, `stp-api-gateway-prod`) || contains(FunctionName, `shared-functions-prod`) || contains(FunctionName, `intent-requirements-prod`)].FunctionName' \
         --output json 2>/dev/null)
     REMAINING_FUNCTION_COUNT=$(echo "$REMAINING_FUNCTIONS" | jq -r '. | length')
     
@@ -423,32 +423,32 @@ echo ""
 REMAINING_STACKS=$(aws cloudformation list-stacks \
     --region "$REGION" \
     --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE UPDATE_ROLLBACK_COMPLETE \
-    --query 'StackSummaries[?contains(StackName, `travel-planner`)].StackName' \
+    --query 'StackSummaries[?contains(StackName, `intent-agent`)].StackName' \
     --output json 2>/dev/null | jq -r '. | length')
 
 REMAINING_BUCKETS=$(aws s3api list-buckets \
     --region "$REGION" \
-    --query 'Buckets[?contains(Name, `stp-state`)].Name' \
+    --query 'Buckets[?contains(Name, `iss-travel-planner`)].Name' \
     --output json 2>/dev/null | jq -r '. | length')
 
 REMAINING_FUNCTIONS=$(aws lambda list-functions \
     --region "$REGION" \
-    --query 'Functions[?contains(FunctionName, `travel-planner`) || contains(FunctionName, `stp-`) || contains(FunctionName, `shared-services`) || contains(FunctionName, `intent-requirements`)].FunctionName' \
+    --query 'Functions[?contains(FunctionName, `stp-api-gateway-prod`) || contains(FunctionName, `shared-functions-prod`) || contains(FunctionName, `intent-requirements-prod`)].FunctionName' \
     --output json 2>/dev/null | jq -r '. | length')
 
 REMAINING_APIS=$(aws apigatewayv2 get-apis \
     --region "$REGION" \
-    --query 'Items[?contains(Name, `travel`)].ApiId' \
+    --query 'Items[?contains(Name, `intent-agent`)].ApiId' \
     --output json 2>/dev/null | jq -r '. | length')
 
 REMAINING_ECR=$(aws ecr describe-repositories \
     --region "$REGION" \
-    --query 'repositories[?contains(repositoryName, `travel-planner-stack`)].repositoryName' \
+    --query 'repositories[?contains(repositoryName, `intentagentstackprod`)].repositoryName' \
     --output json 2>/dev/null | jq -r '. | length')
 
 REMAINING_LOGS=$(aws logs describe-log-groups \
     --region "$REGION" \
-    --query 'logGroups[?contains(logGroupName, `travel-planner-stack`)].logGroupName' \
+    --query 'logGroups[?contains(logGroupName, `/aws/lambda/stp-api-gateway-prod`) || contains(logGroupName, `/aws/lambda/shared-functions-prod`) || contains(logGroupName, `/aws/lambda/intent-requirements-prod`)].logGroupName' \
     --output json 2>/dev/null | jq -r '. | length')
 
 REMAINING_TOTAL=$((REMAINING_STACKS + REMAINING_BUCKETS + REMAINING_FUNCTIONS + REMAINING_APIS + REMAINING_ECR + REMAINING_LOGS))
@@ -501,7 +501,7 @@ else
         aws cloudformation list-stacks \
             --region "$REGION" \
             --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE UPDATE_ROLLBACK_COMPLETE \
-            --query 'StackSummaries[?contains(StackName, `travel-planner`)].{Name:StackName, Status:StackStatus}' \
+            --query 'StackSummaries[?contains(StackName, `intent-agent`)].{Name:StackName, Status:StackStatus}' \
             --output table
     fi
     
@@ -509,7 +509,7 @@ else
         echo -e "${CYAN}Remaining S3 Buckets:${NC}"
         aws s3api list-buckets \
             --region "$REGION" \
-            --query 'Buckets[?contains(Name, `stp-state`)].Name' \
+            --query 'Buckets[?contains(Name, `iss-travel-planner`)].Name' \
             --output table
     fi
     
@@ -517,7 +517,7 @@ else
         echo -e "${CYAN}Remaining Lambda Functions:${NC}"
         aws lambda list-functions \
             --region "$REGION" \
-            --query 'Functions[?contains(FunctionName, `travel-planner`) || contains(FunctionName, `stp-`) || contains(FunctionName, `shared-services`) || contains(FunctionName, `intent-requirements`)].FunctionName' \
+            --query 'Functions[?contains(FunctionName, `stp-api-gateway-prod`) || contains(FunctionName, `shared-functions-prod`) || contains(FunctionName, `intent-requirements-prod`)].FunctionName' \
             --output table
     fi
     

@@ -8,7 +8,7 @@ import time
 
 # Configuration
 # API_GATEWAY_URL = "http://localhost:8000"
-API_GATEWAY_URL = "https://dhn05avgt6.execute-api.ap-southeast-1.amazonaws.com"
+API_GATEWAY_URL = "https://fwjpkz62bk.execute-api.ap-southeast-1.amazonaws.com"
 
 class TravelGatewayClient:
     """Simplified client for travel gateway API"""

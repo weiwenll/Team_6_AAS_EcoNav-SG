@@ -144,7 +144,7 @@ class TestRequirementsGathering:
         
         assert completion_info["mandatory_complete"] is True
         assert completion_info["all_complete"] is True
-        assert completion_info["optional_filled"] == 6
+        assert completion_info["optional_filled"] == 7
     
     async def test_check_completion_mandatory_only(self, mandatory_complete_requirements):
         """Test completion check with only mandatory fields"""
@@ -156,7 +156,7 @@ class TestRequirementsGathering:
         
         assert completion_info["mandatory_complete"] is True
         assert completion_info["all_complete"] is False
-        assert completion_info["optional_filled"] == 0
+        assert completion_info["optional_filled"] == 1
     
     async def test_check_completion_incomplete(self, incomplete_requirements):
         """Test completion check with incomplete requirements"""
@@ -240,7 +240,7 @@ class TestRequirementsAPI:
             "requirements_data": {"requirements": {}},
             "completion_status": "incomplete",
             "interests": [],
-            "optional_progress": "0/6"
+            "optional_progress": "0/7"
         }
         
         with patch('main.service.gather_requirements', return_value=mock_result):
@@ -274,7 +274,7 @@ class TestRequirementsAPI:
             "requirements_data": {"requirements": {}},
             "completion_status": "incomplete",
             "interests": [],
-            "optional_progress": "0/6"
+            "optional_progress": "0/7"
         }
         
         with patch('main.service.gather_requirements', return_value=mock_result):

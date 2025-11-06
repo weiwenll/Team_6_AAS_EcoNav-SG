@@ -631,30 +631,28 @@ class IntentRequirementsService:
             "interests": optional.get("interests"),
             "uninterests": optional.get("uninterests"),
             "accessibility_needs": optional.get("accessibility_needs"),
-            "accommodation_location": optional.get("accommodation_location", {}),  # ← ADD THIS
+            "accommodation_location": optional.get("accommodation_location", {}),
             "group_type": optional.get("group_type")
         }
 
-        # Count filled optional fields - be more strict
+        # Count filled optional fields
         optional_filled = 0
         if optional_fields["eco_preferences"]: optional_filled += 1
         if optional_fields["dietary_preferences"]: optional_filled += 1
-        if optional_fields["interests"] and len(optional_fields["interests"]) > 0: optional_filled += 1
-        if optional_fields["uninterests"] and len(optional_fields["uninterests"]) > 0: optional_filled += 1
+        if optional_fields["interests"] is not None and len(optional_fields["interests"]) > 0: optional_filled += 1
+        if optional_fields["uninterests"] is not None: optional_filled += 1  # ← CHANGED: Accept empty arrays
         if optional_fields["accessibility_needs"]: optional_filled += 1
-        # Check if accommodation_location has neighborhood filled
-        if optional_fields["accommodation_location"] and optional_fields["accommodation_location"].get("neighborhood"): optional_filled += 1  # ← ADD THIS
+        if optional_fields["accommodation_location"] and optional_fields["accommodation_location"].get("neighborhood"): optional_filled += 1
         if optional_fields["group_type"]: optional_filled += 1
 
-        all_complete = mandatory_complete and optional_filled == 7  # ← CHANGE TO 7
+        all_complete = mandatory_complete and optional_filled == 7
         
         return {
             "mandatory_complete": mandatory_complete,
             "all_complete": all_complete,
             "optional_filled": optional_filled,
-            "optional_total": 7  # ← CHANGE TO 7
+            "optional_total": 7
         }
-    
 # -------------------------------------------------
 # FastAPI wiring
 # -------------------------------------------------

@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 import requests
 import time 
 
+PLANNING_BUCKET_NAME = "iss-travel-planner"  # New bucket for planning agent
+
 # ---------------------------------------------------------------------------
 # Path setup to import shared module
 # ---------------------------------------------------------------------------
@@ -79,15 +81,18 @@ def _store_final_json_in_s3(session_id: str, final_json: Dict[str, Any]) -> str:
     """Store final completion JSON in S3"""
     try:
         s3 = _get_s3_client()
-        key = f"{S3_BASE_PREFIX}/final/{session_id}.json" if S3_BASE_PREFIX else f"final/{session_id}.json"
+        # Generate datetime string in format YYYYMMDDTHHMMSS
+        datetime_str = datetime.now().strftime("%Y%m%dT%H%M%S")
+        # New key format: retrieval_agent/active/{datetime}_{session_id}.json
+        key = f"retrieval_agent/active/{datetime_str}_{session_id}.json"
         s3.put_object(
-            Bucket=S3_BUCKET_NAME,
+            Bucket=PLANNING_BUCKET_NAME,
             Key=key,
             Body=json.dumps(final_json, ensure_ascii=False, indent=2).encode("utf-8"),
             ContentType="application/json",
             ServerSideEncryption="AES256"
         )
-        print(f"✅ Final JSON stored in S3: s3://{S3_BUCKET_NAME}/{key}")
+        print(f"✅ Final JSON stored in S3: s3://{PLANNING_BUCKET_NAME}/{key}")
         return key
     except Exception as e:
         print(f"❌ Error storing final JSON in S3: {e}")
@@ -144,10 +149,12 @@ async def _call_planning_agent(final_json: Dict[str, Any]) -> Dict[str, Any]:
     for attempt in range(max_retries):
         try:
             session_id = final_json.get("session_id")
-            s3_key = f"{S3_BASE_PREFIX}/final/{session_id}.json" if S3_BASE_PREFIX else f"final/{session_id}.json"
-            
+            # Generate datetime string in format YYYYMMDDTHHMMSS
+            datetime_str = datetime.now().strftime("%Y%m%dT%H%M%S")
+            s3_key = f"retrieval_agent/active/{datetime_str}_{session_id}.json"
+
             payload = {
-                "bucket_name": S3_BUCKET_NAME,
+                "bucket_name": PLANNING_BUCKET_NAME,  # Changed to iss-travel-planner
                 "key": s3_key,
                 "sender_agent": "Intent Agent",
                 "session": session_id

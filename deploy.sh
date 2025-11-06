@@ -22,14 +22,14 @@ export SAM_CLI_TELEMETRY=0
 export DOCKER_BUILDKIT=0
 export COMPOSE_DOCKER_CLI_BUILD=0
 
-STACK_NAME="${STACK_NAME:-travel-planner-stack}"
+STACK_NAME="${STACK_NAME:-intent-agent-stack-prod}" 
 REGION="${AWS_REGION:-ap-southeast-1}"
 OPENAI_KEY="${OPENAI_KEY:-}"
 OWNER="${STACK_OWNER:-$(whoami)}"
 AWS_PROFILE="${AWS_PROFILE:-default}"
 
 # Generate unique bucket name with timestamp
-BUCKET_NAME="stp-req-${OWNER}-prod"  # Static bucket name
+BUCKET_NAME="iss-travel-planner"
 
 echo -e "${GREEN}Configuration:${NC}"
 echo -e "  Stack Name:    ${YELLOW}$STACK_NAME${NC}"
@@ -179,7 +179,7 @@ if sam deploy \
         OpenAIKey="$OPENAI_KEY" \
         ModelName=gpt-4o \
         StateBucketName="$BUCKET_NAME" \
-        StateBasePrefix=prod \
+        StateBasePrefix=intent_agent \
     --no-confirm-changeset \
     --no-fail-on-empty-changeset \
     --profile "$AWS_PROFILE"; then

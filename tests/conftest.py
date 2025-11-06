@@ -1,8 +1,19 @@
 # tests/conftest.py
 """Pytest fixtures and configuration for all tests"""
 
-import pytest
+# CRITICAL: Set AWS credentials BEFORE any imports to prevent profile lookup
 import os
+
+# Remove AWS_PROFILE if it exists (don't just set to empty string)
+if "AWS_PROFILE" in os.environ:
+    del os.environ["AWS_PROFILE"]
+
+# Set dummy credentials
+os.environ["AWS_ACCESS_KEY_ID"] = "test"
+os.environ["AWS_SECRET_ACCESS_KEY"] = "test"
+os.environ["AWS_DEFAULT_REGION"] = "ap-southeast-1"
+
+import pytest
 import json
 from datetime import datetime, timedelta
 from typing import Dict, Any
