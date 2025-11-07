@@ -178,8 +178,8 @@ Resources:
     Properties:
       FunctionName: stp-api-gateway-prod
       PackageType: Image
-      MemorySize: 2048
-      Timeout: 330
+      MemorySize: 3008
+      Timeout: 900
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -189,6 +189,7 @@ Resources:
               Resource:
                 - !GetAtt SharedServicesFn.Arn
                 - !GetAtt IntentServiceFn.Arn
+                - "arn:aws:lambda:ap-southeast-1:641675857341:function:planner-agent-prod" 
         - S3CrudPolicy:
             BucketName: iss-travel-planner 
         - Statement:  
@@ -214,7 +215,8 @@ Resources:
           AWS_S3_ENDPOINT: !Ref AwsS3Endpoint
           USE_S3: "true"
           RETRIEVAL_AGENT_URL: "https://29jxwf52gb.execute-api.ap-southeast-1.amazonaws.com/prod/research"
-          RETRIEVAL_AGENT_API_KEY: "pYSqYcivG1504xjeQAskn2iyVS7fZ2Uj14lK1w8v"  # ← ADD THIS
+          RETRIEVAL_AGENT_API_KEY: "pYSqYcivG1504xjeQAskn2iyVS7fZ2Uj14lK1w8v" 
+          PLANNER_AGENT_FUNCTION: "arn:aws:lambda:ap-southeast-1:641675857341:function:planner-agent-prod"
       Events:
         TravelPlan:
           Type: HttpApi

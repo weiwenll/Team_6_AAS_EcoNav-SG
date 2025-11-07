@@ -55,8 +55,12 @@ S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT")
 PLANNING_AGENT_URL = os.getenv("PLANNING_AGENT_URL")
 PLANNING_AGENT_ENABLED = os.getenv("PLANNING_AGENT_ENABLED")
 
+# Retrieval Agent Configuration
 RETRIEVAL_AGENT_URL = os.getenv("RETRIEVAL_AGENT_URL")
 RETRIEVAL_AGENT_API_KEY = os.getenv("RETRIEVAL_AGENT_API_KEY")
+
+# Planner Agent Lambda function ARN (for synchronous invocation)
+PLANNER_AGENT_FUNCTION = os.getenv("PLANNER_AGENT_FUNCTION")
 
 # ---------------------------------------------------------------------------
 # S3 Client Setup
@@ -77,6 +81,31 @@ def _get_s3_client():
 # ---------------------------------------------------------------------------
 # S3 Helper Functions
 # ---------------------------------------------------------------------------
+def lambda_synchronous_call(function_name: str, bucket_name: str, key: str,
+                            sender_agent: str, session: str) -> Dict[str, Any]:
+    """
+    Invoke an AWS Lambda function synchronously.
+    Returns the decoded JSON payload from the invoked function.
+    """
+    client = boto3.client("lambda", region_name=AWS_REGION)
+    payload = {
+        "bucket_name": bucket_name,
+        "key": key,
+        "sender_agent": sender_agent,
+        "session": session
+    }
+    try:
+        response = client.invoke(
+            FunctionName=function_name,
+            InvocationType='RequestResponse',
+            Payload=json.dumps(payload).encode('utf-8')
+        )
+        raw_body = response['Payload'].read().decode('utf-8')
+        return json.loads(raw_body) if raw_body else {}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _store_final_json_in_s3(session_id: str, final_json: Dict[str, Any]) -> str:
     """Store final completion JSON in S3"""
     try:
@@ -142,85 +171,83 @@ def _store_for_call_in_s3(session_id: str, final_json: Dict[str, Any], s3_key: s
 # ---------------------------------------------------------------------------
 
 async def _call_planning_agent(final_json: Dict[str, Any]) -> Dict[str, Any]:
-    """Call the retrieval agent with final JSON details"""
-    max_retries = 3
-    retry_delay = 5
-    
-    for attempt in range(max_retries):
-        try:
-            session_id = final_json.get("session_id")
-            # Generate datetime string in format YYYYMMDDTHHMMSS
-            datetime_str = datetime.now().strftime("%Y%m%dT%H%M%S")
-            s3_key = f"retrieval_agent/active/{datetime_str}_{session_id}.json"
+    """
+    1. Upload requirements to the retrieval agent (POST).
+    2. Poll the retrieval agent (GET) until status == completed.
+    3. Invoke the planner agent synchronously via Lambda.
+    Returns a dict containing retrieval_result and planner_result.
+    """
+    session_id = final_json.get("session_id")
+    # Generate retrieval S3 key
+    datetime_str = datetime.now().strftime("%Y%m%dT%H%M%S")
+    retrieval_key = f"retrieval_agent/active/{datetime_str}_{session_id}.json"
+    # Build POST payload
+    payload = {
+        "bucket_name": PLANNING_BUCKET_NAME,
+        "key": retrieval_key,
+        "sender_agent": "Intent Agent",
+        "session": session_id
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": RETRIEVAL_AGENT_API_KEY
+    }
+    # Step 1: POST to retrieval agent
+    post_resp = requests.post(RETRIEVAL_AGENT_URL, json=payload, headers=headers, timeout=400)
+    post_resp.raise_for_status()
+    post_data = post_resp.json()
+    # Derive filename for polling (the retrieval service returns <timestamp>_<session>.json)
+    filename = post_data.get("filename") or f"{datetime_str}_{session_id}.json"
+    # Step 2: Poll retrieval agent until completed
+    polling_headers = {
+        "Content-Type": "application/json",
+        "x-api-key": RETRIEVAL_AGENT_API_KEY
+    }
+    retrieval_status = {}
+    while True:
+        status_resp = requests.get(RETRIEVAL_AGENT_URL,
+                                params={"filename": filename},
+                                headers=polling_headers,
+                                timeout=60)
+        print(status_resp)
+        status_resp.raise_for_status()
+        status_data = status_resp.json()
+        if status_data.get("status") == "completed":
+            retrieval_status = status_data
+            break
+        time.sleep(10)  # wait before next poll
 
-            payload = {
-                "bucket_name": PLANNING_BUCKET_NAME,  # Changed to iss-travel-planner
-                "key": s3_key,
-                "sender_agent": "Intent Agent",
-                "session": session_id
-            }
-            
-            headers = {
-                "Content-Type": "application/json",
-                "X-API-Key": RETRIEVAL_AGENT_API_KEY
-            }
-            
-            print("\n" + "="*80)
-            print(f"🚀 CALLING RETRIEVAL AGENT (Attempt {attempt + 1}/{max_retries})")
-            print("="*80)
-            print(f"📍 URL: {RETRIEVAL_AGENT_URL}")
-            print(f"📦 Payload:")
-            print(json.dumps(payload, indent=2))
-            print("="*80 + "\n")
-            
-            response = requests.post(
-                RETRIEVAL_AGENT_URL,
-                json=payload,
-                headers=headers,
-                timeout=400  # ← Increased from 60 to 120 seconds
-            )
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            print("\n" + "="*80)
-            print(f"✅ RETRIEVAL AGENT RESPONSE RECEIVED")
-            print("="*80)
-            print(f"📥 Status Code: {response.status_code}")
-            print(f"📄 Response:")
-            print(json.dumps(result, indent=2))
-            print("="*80 + "\n")
-            
-            return {
-                "status": "success",
-                "retrieval_response": result,
-                "message": "Successfully called retrieval agent"
-            }
-            
-        except requests.exceptions.Timeout:
-            print(f"\n⚠️ Attempt {attempt + 1} timed out")
-            if attempt < max_retries - 1:
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-                continue
-            else:
-                print("❌ All retry attempts exhausted")
-                return {
-                    "status": "timeout",
-                    "message": "Retrieval agent took too long to respond after 3 attempts"
-                }
-                
-        except requests.exceptions.RequestException as e:
-            print(f"\n❌ Attempt {attempt + 1} failed: {str(e)}")
-            if attempt < max_retries - 1:
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-                continue
-            else:
-                return {
-                    "status": "error",
-                    "message": f"Failed after {max_retries} attempts: {str(e)}"
-                }
+    # Step 2.5: Copy processed file to planner_agent folder
+    s3 = _get_s3_client()
+    source_key = f"retrieval_agent/processed/{datetime_str}_{session_id}.json"
+    destination_key = f"planner_agent/{datetime_str}_{session_id}.json"
+
+    try:
+        # Copy the file within the same bucket
+        s3.copy_object(
+            Bucket=PLANNING_BUCKET_NAME,
+            CopySource={'Bucket': PLANNING_BUCKET_NAME, 'Key': source_key},
+            Key=destination_key
+        )
+        print(f"✅ Copied {source_key} to {destination_key}")
+    except Exception as e:
+        print(f"❌ Error copying file: {e}")
+        raise
+
+    # Step 3: Invoke planner agent synchronously using Lambda ARN
+    planner_result = lambda_synchronous_call(
+        function_name=PLANNER_AGENT_FUNCTION,
+        bucket_name=PLANNING_BUCKET_NAME,
+        key=destination_key,
+        sender_agent="Intent Agent",
+        session=session_id
+    )
+    return {
+        "status": "success",
+        "retrieval_response": retrieval_status,
+        "planner_response": planner_result
+    }
+
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -241,8 +268,10 @@ class TravelPlanningResponse(BaseModel):
     optional_progress: Optional[str] = None
     final_json_s3_key: Optional[str] = None
     planning_agent_status: Optional[str] = None
-    retrieval_agent: Optional[Dict[str, Any]] = None  # ← ADD THIS
+    retrieval_agent: Optional[Dict[str, Any]] = None
+    planner_response: Optional[Dict[str, Any]] = None  # ← add this
     error: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Error handling decorator
@@ -450,7 +479,9 @@ class TravelGateway:
                 # Only call planning agent when ALL complete
                 if is_all_complete:
                     agent_response = await _call_planning_agent(final_json)
-                    print(f"📬 Planning agent response: {agent_response.get('status')}")
+                    print(f"📬 Intent agent response: {agent_response.get('status')}")
+                    print(f"📬 Retreival agent response: {agent_response.get('retrieval_response')}")
+                    print(f"📬 Planning agent response: {agent_response.get('planner_response')}")
                 
                 # Mark as uploaded (first time only)
                 if not already_uploaded:
@@ -480,6 +511,7 @@ class TravelGateway:
                     "data": retrieval_data,
                     "message": "Carbon footprint analysis completed"
                 }
+                base_response["planner_response"] = agent_response.get("planner_response")
                 
                 # Optionally append to user-facing response
                 if retrieval_data:
