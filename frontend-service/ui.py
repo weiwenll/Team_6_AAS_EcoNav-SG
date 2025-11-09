@@ -172,44 +172,43 @@ class TravelGatewayClient:
         """Check if processing is complete by looking for results in S3"""
         try:
             # List objects in planner_agent folder for this session
+            # Check for PDF in summarizer folder
             response = self.s3_client.list_objects_v2(
                 Bucket=S3_BUCKET_NAME,
-                Prefix=f"planner_agent/",
+                Prefix=f"summarizer_agent/pdf/",
                 MaxKeys=100
             )
-            
+
             if 'Contents' not in response:
-                return {"status": "processing", "message": "No results yet"}
-            
-            # Find the most recent file for this session
+                return {"status": "processing", "message": "No PDF yet"}
+
+            # Find PDF file
             session_files = [
                 obj for obj in response['Contents']
-                if session_id in obj['Key'] and obj['Key'].endswith('.json')
+                if session_id in obj['Key'] and obj['Key'].endswith('.pdf')
             ]
-            
+
             if not session_files:
-                return {"status": "processing", "message": "Still processing..."}
-            
-            # Get the most recent file
+                return {"status": "processing", "message": "PDF generating..."}
+
             latest_file = sorted(session_files, key=lambda x: x['LastModified'], reverse=True)[0]
-            
-            # Read the file
-            obj = self.s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=latest_file['Key'])
-            data = json.loads(obj['Body'].read().decode('utf-8'))
-            
-            # ✅ CHANGED: Get presigned URL from response
-            pdf_presigned_url = data.get("s3_pdf_presigned_url")
-            pdf_s3_key = data.get("s3_pdf_key")
-            pdf_available = bool(pdf_presigned_url or pdf_s3_key)
-            
+
+            # Generate presigned URL
+            pdf_s3_key = latest_file['Key']
+            pdf_presigned_url = self.s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': S3_BUCKET_NAME, 'Key': pdf_s3_key},
+                ExpiresIn=3600
+            )
+
             return {
                 "status": "completed",
-                "data": data,
+                "data": {},
                 "s3_key": latest_file['Key'],
                 "last_modified": latest_file['LastModified'].isoformat(),
                 "pdf_s3_key": pdf_s3_key,
-                "pdf_presigned_url": pdf_presigned_url,  # ✅ ADD THIS
-                "pdf_available": pdf_available
+                "pdf_presigned_url": pdf_presigned_url,
+                "pdf_available": True
             }
             
         except Exception as e:
@@ -365,59 +364,50 @@ def display_sidebar():
                 # Show completion status
                 if st.session_state.collection_complete:
                     st.success("✅ Collection Complete!")
-
-                    if st.session_state.pdf_s3_key:
-                        st.divider()
-                        st.markdown("### 📄 Your Itinerary")
-                        
-                        if st.button("📥 Download PDF", key="download_pdf_btn", use_container_width=True, type="primary"):
-                            with st.spinner("Generating download link..."):
-                                # ✅ CHANGED: Use presigned URL if available
-                                if hasattr(st.session_state, 'pdf_presigned_url') and st.session_state.pdf_presigned_url:
-                                    download_url = st.session_state.pdf_presigned_url
-                                else:
-                                    download_url = st.session_state.gateway_client.get_pdf_download_url(
-                                        st.session_state.pdf_s3_key
-                                    )
-                                
-                                if download_url:
-                                    st.markdown(f"[🔗 Click here to download your itinerary]({download_url})")
-                                    st.success("✅ Download link ready!")
-                                else:
-                                    st.error("❌ Could not generate download link. PDF may still be processing.")
-                        
-                        st.caption("Your personalized travel itinerary PDF")
                     
+                    # Check Status Button
+                    st.divider()
                     if st.button("🔄 Check Processing Status", key="check_status_btn", use_container_width=True):
                         with st.spinner("Checking status..."):
                             status = st.session_state.gateway_client.check_processing_status(
                                 st.session_state.session_id
                             )
                             st.session_state.processing_status = status
+                            
+                            if status.get("status") == "completed" and status.get("pdf_available"):
+                                st.session_state.pdf_s3_key = status.get("pdf_s3_key")
+                                st.session_state.pdf_presigned_url = status.get("pdf_presigned_url")
+                            
                             st.rerun()
-
-                    # ✅ ADD THIS ENTIRE SECTION:
+                    
+                    # Show PDF URL if available
+                    if st.session_state.pdf_presigned_url:
+                        st.divider()
+                        st.markdown("### 📄 Your Itinerary PDF")
+                        st.success("✅ PDF Ready!")
+                        
+                        # Clickable download link
+                        st.markdown(f"[📥 **Click here to download your PDF**]({st.session_state.pdf_presigned_url})")
+                        st.caption("Click the link above to open/download your itinerary PDF")
+                        
+                        # Also show the full URL in an expander for reference
+                        with st.expander("🔗 View Full URL"):
+                            st.code(st.session_state.pdf_presigned_url, language=None)
+                    
+                    # Show status
                     if st.session_state.processing_status:
                         status = st.session_state.processing_status
                         if status.get("status") == "completed":
-                            st.success("🎉 Your itinerary is ready!")
-                            
-                            # Store both key AND presigned URL
-                            if status.get("pdf_available"):
-                                st.session_state.pdf_s3_key = status.get("pdf_s3_key")
-                                st.session_state.pdf_presigned_url = status.get("pdf_presigned_url")
-                                st.rerun()
-                            
-                            with st.expander("📄 View Results"):
-                                st.json(status.get("data"))
-                        
+                            st.success("✅ Processing Complete!")
                         elif status.get("status") == "processing":
-                            st.info("⏳ Still processing...")
-                        
-                        else:
-                            st.warning(f"Status: {status.get('message', 'Unknown')}")
-
-                    # Show final JSON info if available
+                            st.info("⏳ Still processing... (Auto-checking every 10s)")
+                        elif status.get("status") == "error":
+                            st.error(f"❌ Error: {status.get('message')}")
+                    elif st.session_state.collection_complete and not st.session_state.pdf_presigned_url:
+                        # Show auto-polling message if no status yet
+                        st.info("⏳ Processing your itinerary... (Auto-checking every 10s)")
+                    
+                    # Show final JSON info
                     if st.session_state.final_json_info:
                         with st.expander("📋 Final JSON Info"):
                             st.json(st.session_state.final_json_info)
@@ -461,6 +451,28 @@ def display_sidebar():
             with st.expander("🔑 Session Details"):
                 st.code(st.session_state.session_id)
                 st.caption("Current session identifier")
+
+def auto_check_pdf_status():
+    """Automatically check for PDF every 10 seconds"""
+    if st.session_state.collection_complete and not st.session_state.pdf_presigned_url:
+        # Only poll if we don't have the PDF yet
+        if 'last_check_time' not in st.session_state:
+            st.session_state.last_check_time = 0
+        
+        current_time = time.time()
+        # Check every 10 seconds
+        if current_time - st.session_state.last_check_time > 10:
+            st.session_state.last_check_time = current_time
+            
+            status = st.session_state.gateway_client.check_processing_status(
+                st.session_state.session_id
+            )
+            
+            if status.get("status") == "completed" and status.get("pdf_available"):
+                st.session_state.pdf_s3_key = status.get("pdf_s3_key")
+                st.session_state.pdf_presigned_url = status.get("pdf_presigned_url")
+                st.session_state.processing_status = status
+                st.rerun()
 
 def display_chat_interface():
     """Main chat interface"""
@@ -551,6 +563,9 @@ def process_user_input(user_input: str):
                 st.caption(f"Intent: {intent} | State: {state}")
         else:
             st.error("Processing failed - please try again")
+
+        if result.get("pdf_presigned_url"):
+            st.session_state.pdf_presigned_url = result.get("pdf_presigned_url")
     
     if result.get("collection_complete", False):
         st.rerun()
@@ -580,6 +595,8 @@ def main():
     )
     
     initialize_session()
+
+    auto_check_pdf_status()
     
     st.title("✈️ Travel Planning Assistant")
     

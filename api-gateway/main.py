@@ -528,16 +528,28 @@ class TravelGateway:
                     update_session(session_id, {"initial_json_uploaded": True})
                     print("✅ Marked initial JSON as uploaded")
                 
-                # Only call planning agent when ALL complete
                 if is_all_complete:
                     agent_response = await _call_planning_agent(final_json, existing_timestamp)
-                    print(f"📬 Intent agent response: {agent_response.get('status')}")
                     print(f"📬 Retrieval agent response: {agent_response.get('retrieval_response')}")
                     print(f"📬 Planning agent response: {agent_response.get('planner_response')}")
                     
-                    # ✅ ADD THIS: Build PDF S3 key
+                    # PDF is already generated - get presigned URL
                     pdf_s3_key = f"summarizer_agent/pdf/{existing_timestamp}_{session_id}.pdf"
-                    agent_response["pdf_s3_key"] = pdf_s3_key  # Add to response
+                    
+                    s3 = _get_s3_client()
+                    try:
+                        pdf_presigned_url = s3.generate_presigned_url(
+                            'get_object',
+                            Params={'Bucket': PLANNING_BUCKET_NAME, 'Key': pdf_s3_key},
+                            ExpiresIn=3600
+                        )
+                        agent_response["pdf_s3_key"] = pdf_s3_key
+                        agent_response["pdf_presigned_url"] = pdf_presigned_url
+                        print(f"✅ PDF presigned URL generated")
+                    except Exception as e:
+                        print(f"❌ Error generating presigned URL: {e}")
+                        agent_response["pdf_s3_key"] = pdf_s3_key
+                        agent_response["pdf_presigned_url"] = None
 
             # Build base response
             base_response = {
@@ -552,7 +564,8 @@ class TravelGateway:
                 "optional_progress": req_data.get("optional_progress", "0/6"),  
                 "final_json_s3_key": final_json_s3_key,
                 "planning_agent_status": agent_response.get("status") if agent_response else None,
-                "pdf_s3_key": agent_response.get("pdf_s3_key") if agent_response else None  # ✅ ADD THIS
+                "pdf_s3_key": agent_response.get("pdf_s3_key") if agent_response else None,
+                "pdf_presigned_url": agent_response.get("pdf_presigned_url") if agent_response else None
             }
 
             # Add retrieval agent data if available
