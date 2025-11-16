@@ -15,3 +15,4 @@ htmlcov
 .coverage
 .pytest_cache
 tests/__pycache__
+frontend-service/.env
